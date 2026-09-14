@@ -10,6 +10,7 @@ export function renderRoster(app) {
   const { players } = getState();
   const sorted = [...players].sort((a, b) => {
     if (a.active !== b.active) return a.active ? -1 : 1;
+    if (!!a.isGuest !== !!b.isGuest) return a.isGuest ? 1 : -1;
     return (a.jerseyNumber ?? 0) - (b.jerseyNumber ?? 0);
   });
 
@@ -17,7 +18,7 @@ export function renderRoster(app) {
     <div class="page-title">
       <div>
         <h1>Roster</h1>
-        <div class="sub">${players.filter((p) => p.active).length} active players</div>
+        <div class="sub">${players.filter((p) => p.active && !p.isGuest).length} active players${players.some((p) => p.isGuest) ? ` · ${players.filter((p) => p.isGuest).length} guest${players.filter((p) => p.isGuest).length === 1 ? '' : 's'}` : ''}</div>
       </div>
       <div class="row" style="flex-wrap:wrap;">
         <a class="btn ghost sm" href="#/balance">🎲 Balance</a>
@@ -44,8 +45,10 @@ function playerRow(p) {
       <div class="player-meta">
         <div class="player-name ${p.active ? '' : 'inactive'}">${escapeHtml(p.name)}</div>
         <div class="player-sub">${formatPositions(p)}${p.guardianName ? ' · ' + escapeHtml(p.guardianName) : ''}</div>
+        ${p.notes ? `<div class="muted small" style="margin-top:2px;">📝 ${escapeHtml(p.notes)}</div>` : ''}
       </div>
       ${streamBadgeHtml(p.skillStream)}
+      ${p.isGuest ? `<span class="badge scheduled">👥 Guest${p.guestTeamName ? ` (${escapeHtml(p.guestTeamName)})` : ''}</span>` : ''}
       ${p.active ? '' : '<span class="badge pending">inactive</span>'}
     </div>
   `;
@@ -53,7 +56,7 @@ function playerRow(p) {
 
 function openPlayerForm(playerId) {
   const existing = playerId ? findPlayer(playerId) : null;
-  const p = existing || { name: '', jerseyNumber: '', positions: [], skillStream: '', guardianName: '', guardianPhone: '', active: true };
+  const p = existing || { name: '', jerseyNumber: '', positions: [], skillStream: '', guardianName: '', guardianPhone: '', notes: '', active: true, isGuest: false, guestTeamName: '' };
   const currentPositions = playerPositions(p);
 
   const dlg = openModal({
@@ -94,10 +97,23 @@ function openPlayerForm(playerId) {
           <label>Guardian phone</label>
           <input type="tel" name="guardianPhone" value="${escapeHtml(p.guardianPhone)}" />
         </div>
+        <div class="field">
+          <label>Notes</label>
+          <textarea name="notes" placeholder="Anything worth remembering — allergies, pickup arrangements, injuries, etc.">${escapeHtml(p.notes || '')}</textarea>
+        </div>
         <label class="checkbox-row">
           <input type="checkbox" name="active" ${p.active ? 'checked' : ''} />
           Active on roster
         </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="player-is-guest" name="isGuest" ${p.isGuest ? 'checked' : ''} />
+          👥 Guest player, visiting from another team
+        </label>
+        <div class="field" id="guest-team-name-field" ${p.isGuest ? '' : 'hidden'}>
+          <label>Visiting from (optional)</label>
+          <input type="text" name="guestTeamName" value="${escapeHtml(p.guestTeamName || '')}" placeholder="e.g. Riverside Rovers" />
+        </div>
+        <div class="muted small" style="margin-top:-8px;">Guests show up for Training attendance, groups, and small-sided matches, but never in Schedule, RSVP, a game's Squad/Lineup, Live Game, squad rules, Balance Teams, or Stats — they're not part of this team's actual fixtures.</div>
         <div class="modal-actions">
           <button type="submit" class="btn block">Save</button>
           ${existing ? '<button type="button" class="btn danger" data-action="delete-player">Delete</button>' : ''}
@@ -106,9 +122,16 @@ function openPlayerForm(playerId) {
     `,
     onMount: (modalEl) => {
       const form = modalEl.querySelector('#player-form');
+      const guestCheckbox = modalEl.querySelector('#player-is-guest');
+      const guestTeamNameField = modalEl.querySelector('#guest-team-name-field');
+      guestCheckbox.addEventListener('change', () => {
+        guestTeamNameField.hidden = !guestCheckbox.checked;
+      });
+
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         const fd = new FormData(form);
+        const isGuest = fd.get('isGuest') === 'on';
         const data = {
           name: (fd.get('name') || '').trim(),
           jerseyNumber: fd.get('jerseyNumber') ? Number(fd.get('jerseyNumber')) : null,
@@ -116,7 +139,10 @@ function openPlayerForm(playerId) {
           skillStream: fd.get('skillStream') || null,
           guardianName: (fd.get('guardianName') || '').trim(),
           guardianPhone: (fd.get('guardianPhone') || '').trim(),
+          notes: (fd.get('notes') || '').trim(),
           active: fd.get('active') === 'on',
+          isGuest,
+          guestTeamName: isGuest ? (fd.get('guestTeamName') || '').trim() : '',
         };
         if (!data.name) return;
         update((state) => {
@@ -143,6 +169,7 @@ function openPlayerForm(playerId) {
               g.presentIds = (g.presentIds || []).filter((id) => id !== existing.id);
               if (g.captainId === existing.id) g.captainId = null;
               if (g.playerOfMatchId === existing.id) g.playerOfMatchId = null;
+              g.subPlan = (g.subPlan || []).filter((e) => e.outId !== existing.id && e.inId !== existing.id);
               if (g.lineup?.slots) {
                 Object.keys(g.lineup.slots).forEach((slotId) => {
                   if (g.lineup.slots[slotId] === existing.id) g.lineup.slots[slotId] = null;
@@ -181,6 +208,14 @@ function openImportModal() {
           <label>File</label>
           <input type="file" name="file" accept=".csv,.xlsx,.xls" />
         </div>
+        <label class="checkbox-row">
+          <input type="checkbox" id="import-as-guests" />
+          👥 Import this whole list as guest players (visiting from another team, for a joint training session)
+        </label>
+        <div class="field" id="import-guest-team-name-field" hidden>
+          <label>Visiting from (optional)</label>
+          <input type="text" id="import-guest-team-name" placeholder="e.g. Riverside Rovers" />
+        </div>
         <div id="import-status" class="muted small"></div>
         <div id="import-preview"></div>
       </div>
@@ -191,7 +226,13 @@ function openImportModal() {
       const previewEl = modalEl.querySelector('#import-preview');
       const copyBtn = modalEl.querySelector('[data-action="copy-template"]');
       const fallbackEl = modalEl.querySelector('#import-template-fallback');
+      const importAsGuestsCheckbox = modalEl.querySelector('#import-as-guests');
+      const guestTeamNameField = modalEl.querySelector('#import-guest-team-name-field');
       let parsedRows = [];
+
+      importAsGuestsCheckbox.addEventListener('change', () => {
+        guestTeamNameField.hidden = !importAsGuestsCheckbox.checked;
+      });
 
       copyBtn.addEventListener('click', async () => {
         await copyToClipboard(TEMPLATE_CSV, {
@@ -273,6 +314,8 @@ function openImportModal() {
             alertDialog('No players selected to import.');
             return;
           }
+          const isGuest = importAsGuestsCheckbox.checked;
+          const guestTeamName = isGuest ? modalEl.querySelector('#import-guest-team-name').value.trim() : '';
           update((state) => {
             checked.forEach((r) => {
               state.players.push({
@@ -284,6 +327,8 @@ function openImportModal() {
                 guardianName: r.guardianName,
                 guardianPhone: r.guardianPhone,
                 active: true,
+                isGuest,
+                guestTeamName,
               });
             });
           });

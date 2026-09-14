@@ -10,6 +10,7 @@ export function seedTeam() {
     numPeriods: 2,
     equalPlayingTimePolicy: true,
     minStintMinutes: 4,
+    minPlayingTimePercent: 50,
     enableCards: false,
     subAlertsEnabled: true,
     rules: [],
@@ -29,6 +30,7 @@ export function emptyTeam() {
     numPeriods: 2,
     equalPlayingTimePolicy: true,
     minStintMinutes: 4,
+    minPlayingTimePercent: null,
     enableCards: false,
     subAlertsEnabled: true,
     rules: [],
@@ -52,6 +54,7 @@ export function seedPlayers() {
     skillStream,
     guardianName: '',
     guardianPhone: '',
+    notes: '',
     active: true,
   }));
 }
@@ -65,6 +68,38 @@ function addDays(iso, days) {
   const d = new Date(iso + 'T00:00:00');
   d.setDate(d.getDate() + days);
   return d.toISOString().slice(0, 10);
+}
+
+export function seedTrainings(players = []) {
+  const today = todayIso();
+  const present = players.slice(0, 8).map((p) => p.id);
+  const byStream = (stream) => players.filter((p) => present.includes(p.id) && (p.skillStream || null) === stream).map((p) => p.id);
+  const groups = ['A', 'B', 'C', 'D']
+    .map((s) => ({ id: uid(), name: s, playerIds: byStream(s) }))
+    .filter((g) => g.playerIds.length);
+
+  return [{
+    id: uid(),
+    date: addDays(today, 3),
+    time: '18:00',
+    location: 'Training Ground 2',
+    presentIds: present,
+    groups,
+    blocks: [
+      { id: uid(), minutes: 10, mode: 'whole', activity: 'Warm-up: dynamic stretching + light jog', groupActivities: {} },
+      { id: uid(), minutes: 15, mode: 'grouped', activity: '', groupActivities: Object.fromEntries(groups.map((g, i) => [g.id, i % 2 === 0 ? 'Dribbling through gates' : 'Passing triangles']))},
+      { id: uid(), minutes: 20, mode: 'whole', activity: 'Small-sided games (5v5)', groupActivities: {} },
+      { id: uid(), minutes: 5, mode: 'whole', activity: 'Cool-down + water break', groupActivities: {} },
+    ],
+  }];
+}
+
+export function seedDrills() {
+  return [
+    { id: uid(), name: 'Passing Triangles', description: 'Three players form a triangle, one-touch passing around it. Rotate who moves after each pass to add movement off the ball.', link: '', attachment: null, tags: ['Passing'] },
+    { id: uid(), name: 'Dribbling Through Gates', description: 'Scatter pairs of cones ("gates") across a grid. Players dribble freely, aiming to pass the ball through as many gates as possible in a set time.', link: '', attachment: null, tags: ['Dribbling & Ball Control'] },
+    { id: uid(), name: 'Small-Sided Possession Game', description: 'A small grid, two teams keep possession against each other (add a neutral player to make it easier for the team in possession). Count consecutive passes.', link: '', attachment: null, tags: ['Possession / Rondo', 'Small-Sided Games'] },
+  ];
 }
 
 export function seedGames(players = [], squadFormat = 7) {

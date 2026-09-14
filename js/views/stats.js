@@ -1,5 +1,5 @@
 import { getState, update } from '../store.js';
-import { escapeHtml, formatDate, formatMinutes, formatPercent, formatPositions, matchTypeBadgeHtml, sortByDateTime, startOfWeekIso, weekLabel, uid } from '../util.js';
+import { escapeHtml, formatDate, formatMinutes, formatPercent, formatPositions, matchTypeBadgeHtml, sortByDateTime, startOfWeekIso, weekLabel, uid, periodLabel, gameNumPeriods, gamePeriodMinutes, matchEligiblePlayers } from '../util.js';
 import { openModal, closeModal, alertDialog } from '../modal.js';
 
 // Reads a weekly award's chosen players regardless of whether it's the
@@ -22,9 +22,13 @@ function sortColumns(team) {
   if (team.enableCards) {
     cols.push({ key: 'yellows', label: 'Y' }, { key: 'reds', label: 'R' });
   }
+  if (team.minPlayingTimePercent != null) {
+    cols.push({ key: 'playingTimePercent', label: 'PT%' });
+  }
   cols.push(
     { key: 'potm', label: '⭐' }, { key: 'captaincies', label: '🅲' },
-    { key: 'weeklyAwards', label: '🏅' }, { key: 'attendance', label: 'Att%' },
+    { key: 'weeklyAwards', label: '🏅' }, { key: 'attendance', label: 'Match Att%' },
+    { key: 'trainingAttendance', label: 'Trn Att%' },
   );
   return cols;
 }
@@ -33,14 +37,21 @@ let sortKey = 'goals';
 let sortDir = 'desc';
 
 function computeLeaderRows() {
-  const { players, games, team } = getState();
-  const active = players.filter((p) => p.active);
+  const { players, games, trainings, team } = getState();
+  const active = matchEligiblePlayers(players);
   const completed = games.filter((g) => g.status === 'completed');
   const trackedForAttendance = games.filter((g) => (g.presentIds || []).length > 0);
+  const trackedTrainings = (trainings || []).filter((t) => (t.presentIds || []).length > 0);
   const weeklyAwards = team.weeklyAwards || [];
 
   return active.map((p) => {
     let minutes = 0, goals = 0, assists = 0, saves = 0, apps = 0, yellows = 0, reds = 0, potm = 0, captaincies = 0;
+    // "Possible" seconds — the total length of every completed match this
+    // player was actually present for (whether picked or benched) — is the
+    // denominator for playingTimePercent below: minutes they *could* have
+    // played, not just a count of matches, so a season with a mix of
+    // 50-minute and 70-minute matches still comes out fair.
+    let possibleSeconds = 0;
     completed.forEach((g) => {
       // On a match-day with more than one game, playingTime is seeded from
       // the earlier match(es) so the live fair-play banner can compare
@@ -54,6 +65,9 @@ function computeLeaderRows() {
       const secs = Math.max(0, total - carriedIn);
       if (secs > 0) apps += 1;
       minutes += secs;
+      if ((g.presentIds || []).includes(p.id)) {
+        possibleSeconds += gameNumPeriods(g, team) * gamePeriodMinutes(g, team) * 60;
+      }
       if (g.playerOfMatchId === p.id) potm += 1;
       if (g.captainId === p.id) captaincies += 1;
       (g.live?.subLog || []).forEach((e) => {
@@ -64,18 +78,23 @@ function computeLeaderRows() {
         if (e.type === 'card' && e.playerId === p.id && e.cardType === 'red') reds += 1;
       });
     });
+    const playingTimePercent = possibleSeconds > 0 ? minutes / possibleSeconds : null;
     const presentCount = trackedForAttendance.filter((g) => (g.presentIds || []).includes(p.id)).length;
     const attendance = trackedForAttendance.length ? presentCount / trackedForAttendance.length : null;
+    const trainingPresentCount = trackedTrainings.filter((t) => (t.presentIds || []).includes(p.id)).length;
+    const trainingAttendance = trackedTrainings.length ? trainingPresentCount / trackedTrainings.length : null;
     const weeklyAwardCount = weeklyAwards.filter((a) => awardPlayerIds(a).includes(p.id)).length;
-    return { player: p, apps, minutes, goals, assists, saves, yellows, reds, potm, captaincies, weeklyAwards: weeklyAwardCount, attendance };
+    return { player: p, apps, minutes, goals, assists, saves, yellows, reds, potm, captaincies, weeklyAwards: weeklyAwardCount, attendance, trainingAttendance, playingTimePercent };
   });
 }
+
+const NULLABLE_SORT_KEYS = ['attendance', 'trainingAttendance', 'playingTimePercent'];
 
 function sortRows(rows) {
   const dir = sortDir === 'asc' ? 1 : -1;
   return [...rows].sort((a, b) => {
-    const av = sortKey === 'attendance' ? (a.attendance ?? -1) : a[sortKey];
-    const bv = sortKey === 'attendance' ? (b.attendance ?? -1) : b[sortKey];
+    const av = NULLABLE_SORT_KEYS.includes(sortKey) ? (a[sortKey] ?? -1) : a[sortKey];
+    const bv = NULLABLE_SORT_KEYS.includes(sortKey) ? (b[sortKey] ?? -1) : b[sortKey];
     if (av === bv) return a.player.name.localeCompare(b.player.name);
     return (av - bv) * dir;
   });
@@ -123,9 +142,88 @@ function headToHead() {
   }).sort((a, b) => a.opponent.localeCompare(b.opponent));
 }
 
+// How many times each player has gone in goal, broken down by which half
+// (or quarter, etc. — whatever the team's period format is) they kept for.
+// gkByPeriod on a completed game's live state is { periodNumber: playerId
+// } for that one match; this tallies it across every completed match.
+// Columns are labelled off the team's current period format/count rather
+// than each game's own numPeriods, since a season's matches are normally
+// all played to the same format — good enough without tracking a label
+// per historical game.
+function computeGoalkeeperRows() {
+  const { players, games, team } = getState();
+  const active = matchEligiblePlayers(players);
+  const completed = games.filter((g) => g.status === 'completed' && g.live);
+
+  let maxPeriods = 0;
+  completed.forEach((g) => {
+    maxPeriods = Math.max(maxPeriods, gameNumPeriods(g, team));
+  });
+
+  const rows = active
+    .map((p) => {
+      const byPeriod = {};
+      let total = 0;
+      completed.forEach((g) => {
+        Object.entries(g.live.gkByPeriod || {}).forEach(([periodNum, playerId]) => {
+          if (playerId !== p.id) return;
+          byPeriod[periodNum] = (byPeriod[periodNum] || 0) + 1;
+          total += 1;
+        });
+      });
+      return { player: p, byPeriod, total };
+    })
+    .filter((r) => r.total > 0)
+    .sort((a, b) => b.total - a.total || a.player.name.localeCompare(b.player.name));
+
+  return { rows, maxPeriods };
+}
+
+function goalkeeperStatsHtml() {
+  const { team, games } = getState();
+  const { rows, maxPeriods } = computeGoalkeeperRows();
+  const hasCompletedGame = games.some((g) => g.status === 'completed' && g.live);
+  if (!rows.length) {
+    // Shown even when empty (rather than disappearing outright) so it's
+    // clear the feature exists and what's missing — no completed match
+    // yet, or one has finished but no keeper was ever assigned per half.
+    return `
+      <div class="section-title">🧤 Goalkeeper Appearances</div>
+      <div class="card empty">${hasCompletedGame
+        ? 'No completed match yet has a goalkeeper recorded for a half — set one on the Squad tab before starting, or confirm it when a new period begins.'
+        : 'Once a match is completed with a goalkeeper set for each half, appearances will show up here.'}</div>
+    `;
+  }
+  const periodNumbers = Array.from({ length: maxPeriods }, (_, i) => i + 1);
+  return `
+    <div class="section-title">🧤 Goalkeeper Appearances</div>
+    <div class="card" style="overflow-x:auto;">
+      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+          <tr>
+            <th style="text-align:left; padding:6px 8px;">Player</th>
+            ${periodNumbers.map((n) => `<th style="text-align:right; padding:6px 8px; white-space:nowrap;">${escapeHtml(periodLabel(team.numPeriods, n))}</th>`).join('')}
+            <th style="text-align:right; padding:6px 8px;">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((r) => `
+            <tr style="border-top:1px solid var(--line);">
+              <td style="padding:6px 8px; font-weight:600;">${escapeHtml(r.player.name)}</td>
+              ${periodNumbers.map((n) => `<td style="text-align:right; padding:6px 8px;">${r.byPeriod[n] || 0}</td>`).join('')}
+              <td style="text-align:right; padding:6px 8px; font-weight:700;">${r.total}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
 export function renderStats(app) {
-  const { games, team } = getState();
+  const { games, trainings, team } = getState();
   const completedCount = games.filter((g) => g.status === 'completed').length;
+  const trainingsTrackedCount = (trainings || []).filter((t) => (t.presentIds || []).length > 0).length;
   const rows = sortRows(computeLeaderRows());
   const history = sortByDateTime(games).reverse();
   const h2h = headToHead();
@@ -136,7 +234,7 @@ export function renderStats(app) {
     <div class="page-title">
       <div>
         <h1>Stats</h1>
-        <div class="sub">${completedCount} match${completedCount === 1 ? '' : 'es'} played</div>
+        <div class="sub">${completedCount} match${completedCount === 1 ? '' : 'es'} played${trainingsTrackedCount ? ` · ${trainingsTrackedCount} training session${trainingsTrackedCount === 1 ? '' : 's'} tracked` : ''}</div>
       </div>
     </div>
 
@@ -146,6 +244,9 @@ export function renderStats(app) {
     ` : ''}
 
     <div class="section-title">Leaders</div>
+    ${team.minPlayingTimePercent != null ? `
+      <p class="muted small" style="margin:-4px 0 8px;">PT% is each player's share of the total minutes available across matches they were present for. ⚠️ flags anyone below this team's ${team.minPlayingTimePercent}% minimum playing time standard (set in <a href="#/settings">Settings</a>).</p>
+    ` : ''}
     <div class="card" style="overflow-x:auto;">
       <table style="width:100%; border-collapse:collapse; font-size:13px;">
         <thead>
@@ -159,10 +260,12 @@ export function renderStats(app) {
           </tr>
         </thead>
         <tbody>
-          ${rows.length ? rows.map((r) => leaderRowHtml(r, columns)).join('') : `<tr><td colspan="${columns.length + 1}" class="empty">No players yet.</td></tr>`}
+          ${rows.length ? rows.map((r) => leaderRowHtml(r, columns, team)).join('') : `<tr><td colspan="${columns.length + 1}" class="empty">No players yet.</td></tr>`}
         </tbody>
       </table>
     </div>
+
+    ${goalkeeperStatsHtml()}
 
     <div class="section-title">History</div>
     ${history.length ? history.map(historyRowHtml).join('') : '<div class="card empty">No games yet.</div>'}
@@ -210,7 +313,7 @@ function weekRowHtml(week) {
 
 function openWeekAwardModal(week, onSaved) {
   const { players } = getState();
-  const active = players.filter((p) => p.active);
+  const active = matchEligiblePlayers(players);
   const present = active.filter((p) => week.presentIds.includes(p.id));
   const pool = present.length ? present : active;
   if (!pool.length) {
@@ -257,7 +360,9 @@ function openWeekAwardModal(week, onSaved) {
   });
 }
 
-function leaderRowHtml(row, columns) {
+function leaderRowHtml(row, columns, team) {
+  const belowStandard = team.minPlayingTimePercent != null && row.playingTimePercent != null
+    && Math.round(row.playingTimePercent * 100) < team.minPlayingTimePercent;
   const cellFor = {
     apps: row.apps,
     minutes: formatMinutes(row.minutes),
@@ -270,6 +375,10 @@ function leaderRowHtml(row, columns) {
     captaincies: row.captaincies,
     weeklyAwards: row.weeklyAwards,
     attendance: row.attendance == null ? '—' : formatPercent(row.attendance),
+    trainingAttendance: row.trainingAttendance == null ? '—' : formatPercent(row.trainingAttendance),
+    playingTimePercent: row.playingTimePercent == null
+      ? '—'
+      : `${belowStandard ? '⚠️ ' : ''}${formatPercent(row.playingTimePercent)}`,
   };
   return `
     <tr style="border-top:1px solid var(--line);">

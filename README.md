@@ -28,10 +28,16 @@ see everything working immediately. Reset or clear that data any time from
 
 ## Features
 
+- **Home** — the next game (with an RSVP summary) and the last result up
+  top, then a Quick Links grid to every other section — Roster, Schedule,
+  Training, Stats, Settings, and Help & How-To.
 - **Roster** — players with jersey number, one or more preferred positions
-  (a versatile player can be both DEF and MID, say), guardian contact,
-  active/inactive status, and a streaming classification (A/B/C/D) you
-  assign per player to keep team-building fair. **Import** lets you bulk-add
+  (a versatile player can be both DEF and MID, say), guardian contact, a
+  free-text **notes** field (allergies, pickup arrangements, an injury —
+  anything worth remembering that doesn't fit another field; shows as a
+  📝 preview line on the roster row when set), active/inactive status,
+  and a streaming classification (A/B/C/D) you assign per player to keep
+  team-building fair. **Import** lets you bulk-add
   players from a .csv or .xlsx file instead of typing each one in — the
   first row should be headers, and common variants (Name/Player, Jersey/
   Number/#, Position/Pos, Stream/Group/Classification, Guardian/Parent,
@@ -39,7 +45,19 @@ see everything working immediately. Reset or clear that data any time from
   It previews every row before importing, skips rows with no name, flags
   values it doesn't recognize (an odd position or stream) instead of
   guessing, and defaults to skipping any name that's already on the roster
-  (you can still check it to import anyway).
+  (you can still check it to import anyway). A player can also be marked
+  **👥 Guest** (with an optional "visiting from" team name) — meant for
+  combining with another team for a joint training session. A guest shows
+  up for Training's Attendance, Groups, and small-sided Matches tabs (so
+  numbers work out for drills and scrimmages), but is excluded everywhere
+  match-related: Schedule/RSVP, a game's Squad and Lineup, Live Game, the
+  squad-rule editor, Balance Teams, and Stats — since they're not actually
+  part of your team for real fixtures. The Roster header splits out the
+  guest count separately from "active players" for that reason. The
+  Import dialog has a matching "Import this whole list as guest players"
+  checkbox — tick it (with an optional shared team name) to bring a whole
+  visiting team's roster in as guests in one go, instead of adding each
+  one by hand and flipping the Guest switch every time.
 - **Balance Teams** — pick who's involved (defaults to the whole active
   roster), then randomly split them into 2–4 teams. The split balances each
   streaming classification separately (so it's not just an even head count
@@ -99,6 +117,148 @@ see everything working immediately. Reset or clear that data any time from
   match. Once a game is live or completed, deleting it moves to Edit
   Game's Delete button instead, so match history and stats aren't one
   accidental tap away.
+- **Training** — a separate section from Schedule for practices rather than
+  matches. "+ Add Training" creates a session with a date, time, and
+  location; each session has four tabs:
+  - **Attendance** — tap players to mark who's actually shown up, same
+    interaction as a game's Squad tab.
+  - **Groups** — two modes, same as Matches below. **Same stream**
+    (default) clusters players of similar skill stream together, so each
+    group can be coached at its own level. Leave "Number of groups" blank
+    for one group per stream present, or set a specific number — fewer
+    than the streams present merges the smallest adjacent pair, more
+    splits the largest group roughly in half. "⚖️ Balance numbers across
+    groups" (checked by default in this mode) runs a follow-up pass that
+    repeatedly moves one player from the largest group into whichever
+    smallest group sits closest to it in ability, until no group has more
+    than one extra player over any other — trading a little clustering
+    purity for fairer numbers, automatically. **Mixed ability** is the
+    opposite: every skill stream is spread evenly across however many
+    groups you set (reusing Balance Teams' even-spread algorithm), so each
+    group gets a fair cross-section instead of similar players together —
+    useful for stations built around mixed-ability play, or just to vary
+    things up; numbers are inherently balanced in this mode, so there's no
+    separate checkbox for it. Tap "🎲 Auto-Build Groups" to build (or
+    rebuild) in whichever mode is selected. If a group still ends up too
+    big, too small, or otherwise wrong for what you want, tap a player to
+    select them, then tap "Move here" on a different group's card to move
+    them across by hand.
+  - **Matches** — sets up small-sided scrimmage teams, a separate concept
+    from coaching Groups. Pick a number of teams and tap "Build Match
+    Teams"; "Randomize Again" re-rolls it. The most teams offered scales
+    with who's actually present (at least 2 players per team), rather than
+    a fixed cap. **Same stream** clusters similar ability onto the same
+    team (good for two matches at different intensities, reusing the
+    Groups clustering algorithm); **Mixed ability** spreads every stream
+    evenly across teams instead, for one fair match (reusing Balance
+    Teams' even-spread algorithm). Match teams are independent of Groups
+    and the Plan, and show up in Copy to Share.
+  - **Plan** — a session planner: an ordered list of timed blocks (warm-up,
+    a drill, a scrimmage, cool-down, etc.), each either one activity for
+    the whole squad or a different activity per group running in parallel.
+    A grouped block can also be set to **rotate**: instead of every group
+    staying at one activity for the block's whole duration, groups rotate
+    through every station in turn (a circuit), and the minutes field
+    becomes "per rotation" — the block's total time, the session running
+    total, and the estimated finish time all scale to minutes × number of
+    stations automatically, since that's genuinely how long it takes for
+    every group to get through every station. A block can also be marked
+    as a **break** (water/rest stop) — shown with a ☕ marker, skipping the
+    activity-type and group fields entirely, just a duration and an
+    optional note. Each activity field has a "📚 Fill from Drill Library…"
+    dropdown to pull in a saved drill instead of retyping it, and "+ Add
+    Drill" is reachable from the Training list and every session's page
+    too, not just the library itself. Filling from the library also keeps
+    a link back to that drill (`block.activityDrillId` for a whole-team
+    activity, `block.groupActivityDrillIds` per group) — a "📚 View Drill"
+    button next to the activity text reopens its full description, image,
+    PDF/link, and tags in a read-only modal, both on the static Plan tab
+    and on the live timer below, so a coach never has to leave Training
+    mid-session to remember what a drill actually involves. Typing over
+    the activity text by hand clears that link, since it may no longer
+    describe the linked drill — but any activity whose text exactly
+    matches a saved drill's name (case/whitespace-insensitive) still gets
+    a "View Drill" button even without an explicit link, so blocks typed
+    by hand, or created before this feature existed (including the
+    sample seed data), aren't stuck with no way back to their drill.
+    Reorder, edit, or delete blocks.
+    "▶ Start Session" turns the static plan into a **live countdown
+    timer**: a big clock counts down the current block, an order-of-play
+    list shows done/current/upcoming blocks, and ⏸ Pause / ▶ Resume, ⏮
+    Previous, and ⏭ Skip controls adjust it on the fly — pausing genuinely
+    freezes the clock (driven by the same global one-second ticker as a
+    live match's clock, so it keeps running even off-screen, and a pause
+    is just `live.running = false` rather than stopping the ticker). A
+    chime/vibration (the same alert used for substitution reminders) fires
+    whenever the timer crosses into a new block. A rotation block's live
+    view shows exactly which station each group is on and counts down that
+    specific leg, with its own "View Drill" button per station where one's
+    linked. "⏹ End Session" stops the timer without touching the saved
+    plan; a live session shows a 🔴 LIVE tag on the Training list.
+  - **Copy to Share / native share** — at the top of any session's page
+    (same pattern as Balance Teams' team split), "📋 Copy to Share" copies
+    the whole session — attendance, groups, match teams, and the full plan
+    with timings — as plain text, ready to paste into a WhatsApp message
+    or text to another coach. Where the browser supports it, "📤 Text /
+    Share…" opens the native share sheet directly instead of copy/paste.
+- **Drill Library** — a reusable repository of drills, separate from any
+  one session (linked from the top of the Training page, and reachable
+  from any Training screen via "+ Add Drill"). "📚 Load Starter Drill Pack"
+  adds a curated set of about 45 real drills in one tap — spanning
+  warm-ups, passing, dribbling, shooting, defending, possession, small-sided
+  games, fitness, goalkeeping, set pieces, cool-downs and fun games, each
+  linking to a genuine coaching video (see `js/starterDrills.js`). A dozen
+  of them also ship with a small original diagram — a cone/player layout
+  drawn as inline SVG, so it stays plain text in the source file and costs
+  nothing to load — covering the drills where a simple picture of the setup
+  is genuinely more useful than the video alone (rondo grids, cone
+  patterns, corner-kick runs, and the like); most rely on the video link by
+  itself. It's dedup'd by name, so clicking it again only adds whatever's
+  still missing — safe to press repeatedly.
+  Each drill (starter-pack or hand-added) has a name, an optional
+  description, age groups, tags, an optional weblink (a video or article),
+  and an optional attached PDF or image (a diagram, say). Age groups reuse
+  the same six FAI-based bands as the rest of the app (U7, U8-U9, U10-U11,
+  U12, U13, U14+ — see `js/ageFormats.js`), shown as one-tap chips, so a
+  coach can filter the whole library down to drills that suit a specific
+  squad's age. Tags are a curated set of common categories (Warm-up,
+  Passing, Dribbling & Ball Control, Shooting, Defending, Possession /
+  Rondo, Small-Sided Games, Fitness & Conditioning, Goalkeeping, Set
+  Pieces, Cool-down, Fun / Game-based) shown the same way, plus a free-text
+  "+ Add Tag" for anything else — a used custom tag then shows up as its
+  own filter chip in the library too. Age group and category filters
+  combine (both narrow the list at once), and the search box also matches
+  age-group text, so typing "U10" surfaces anything tagged for that band
+  without needing to tap a chip. Images are resized
+  automatically; PDFs are capped at roughly 1.5MB, since everything here
+  is stored on-device in the same `localStorage` as the rest of the team's
+  data, which has far less headroom than a normal file system — a weblink
+  is unlimited and costs nothing, so it's the better choice for anything
+  large or already hosted somewhere. Before saving, Boot Room does a real
+  test write to confirm the drill (attachment included) actually fits in
+  storage, and tells the coach plainly if it doesn't rather than silently
+  failing or risking other data. Deleting a drill never breaks a session's
+  plan, since a plan block only ever copies a drill's name in at the
+  moment it's picked — it's not a live link back to the drill. Tapping a
+  drill's attachment name opens it in a new tab (via a same-origin blob:
+  URL rather than linking the stored data: URL directly, since browsers
+  block a data: URL as a direct new-tab target — the earlier version of
+  this link silently failed to open anything). A drill with an attachment
+  also gets a "📤 Share / Download" button: where the browser supports
+  sharing files (most current Android/iOS), it opens the native share
+  sheet with the actual image or PDF attached, ready to send straight into
+  WhatsApp or Messages; everywhere else (most desktop browsers, older iOS)
+  it downloads the file instead. "📦 Export ZIP" bundles every drill —
+  attachments included, each as a real file under an `attachments/`
+  folder rather than embedded as text — into one .zip to hand to another
+  coach; they use "📦 Import ZIP" on their own device to load them
+  straight into their library, always as new drills with fresh ids (never
+  overwriting anything already there), applying the same size caps and a
+  per-drill storage-quota check as adding one by hand — an attachment
+  that won't fit is left out (the drill still imports with its text) and
+  the after-import summary says what happened. Needs an internet
+  connection the first time, since it lazy-loads a small ZIP library
+  (JSZip, from cdnjs) the same way Excel import lazy-loads SheetJS.
 - **Captain & Player of the Match** — set per game from that game's page
   (pulled from whoever's marked present, or the full roster if attendance
   isn't set yet). Both show up as season totals in Stats.
@@ -123,21 +283,55 @@ see everything working immediately. Reset or clear that data any time from
   see who actually showed up versus who said they would.
 - **Squad tab** — fast, on-the-fly match-day squad building: tap players
   present today ("✅ Use RSVP List" if you're using RSVPs, or "Mark All
-  Present" in one tap), then place them on a pitch formation (5/7/9/11-a-side
-  based on your team's settings) — or tap "⚡ Auto-Fill" to place everyone
-  present by their preferred position in one go (goalkeeper slot filled
-  from GK-tagged players first) and just adjust from there; it only fills
-  empty spots, so it's also a quick way to plug remaining gaps after
-  placing a few players yourself. The GK spot
-  sets your 1st-half keeper. Once the match is live, this tab switches to a
-  quick "add a late arrival" view — mark them present and they show up on
-  the live bench immediately, no need to touch the pitch again.
+  Present" in one tap), then place them on a pitch formation — or tap
+  "⚡ Auto-Fill" to place everyone present by their preferred position in
+  one go (goalkeeper slot filled from GK-tagged players first) and just
+  adjust from there; it only fills empty spots, so it's also a quick way
+  to plug remaining gaps after placing a few players yourself. The GK spot
+  sets your 1st-half keeper.
+  - **Formations** — a **Formation** dropdown above the pitch offers a
+    few common default shapes for your squad size (e.g. 7-a-side gets
+    2-3-1, 3-2-1, and 2-2-2) plus anything you've built yourself (see
+    below), labeled "(yours)" to tell them apart. Switching formations
+    mid-setup remaps your current lineup rather than clearing it — slots
+    that exist in both shapes (matched by id, e.g. `d1`, `m2`) keep their
+    player; anyone whose slot doesn't exist in the new shape just moves to
+    the bench. **Create your own** from Settings' "Formations" section:
+    name it and choose how many defenders/midfielders/forwards you want
+    (must add up to one less than your squad size, to leave room for the
+    goalkeeper) — the app lays them out on the pitch as evenly spaced rows
+    rather than needing pixel-precise drag-and-drop placement. It then
+    shows up as an option for every game using that squad size, and can be
+    edited or deleted from Settings at any time (a game using a deleted
+    formation falls back to a default suggestion automatically).
+  - **Positions carry through the live match**, not just the pre-match
+    setup: substituting a player on takes over the exact pitch slot the
+    player coming off held, shown as a role label (DEF/MID/FWD) on their
+    live match-day card instead of just "On field" — so "who's playing
+    where" stays meaningful for the whole match, not only at kickoff.
+    Sending a player off or recovering one frees or re-fills their slot
+    the same way.
+  Once the match is live, the Squad tab itself switches to a quick "add a
+  late arrival" view — mark them present and they show up on the live
+  bench immediately, no need to touch the pitch again.
 - **Live game day**:
   - A match clock that keeps running in real time no matter what screen
     you're on — step away to the Squad tab, Roster, wherever, and it's
     still accurate when you come back.
   - Rolling substitutions: unlimited subs, paired ("who's on, then who's
     off") with an "add to pitch" option when there's a spare spot.
+  - **Live pitch + tap-to-substitute** — the same visual pitch from the
+    pre-match Squad tab carries into the live match, kept in sync with
+    who's actually on the field (including subs and send-offs as they
+    happen). Tap any on-field player on the pitch to open a small
+    "Substitute" dropdown of bench players — pick one and the swap runs
+    through the normal sub flow (min-stint and squad-rule warnings still
+    apply) — no need to scroll down to the bench section first. The
+    **Formation** dropdown also works mid-match: switching shapes remaps
+    everyone's position onto the new layout without touching who's
+    actually on the field, and any on-field player whose old slot id
+    doesn't exist in the new formation is placed into whatever slot is
+    left over rather than being left without a visible position.
   - Minimum-stint protection (default 4 min, adjustable in Settings) — subbing
     a player off before they've had a fair block of time on the pitch shows
     a warning naming them and how long they've actually played; you can
@@ -145,8 +339,41 @@ see everything working immediately. Reset or clear that data any time from
   - Goals logged with scorer + optional assist; opponent goals logged with
     one tap.
   - GK saves logged per player (or "open play"), with an editable minute.
-  - Send-off (and, if your team logs cards, yellow/red cards) — a red card
-    or send-off removes the player from selection for the rest of the match.
+  - Removing a player from the match — every on-field player and the
+    goalkeeper has a removal button ("Card / Remove" with Cards enabled in
+    Settings, "Remove from Match" without) that opens a short "What
+    happened?" menu instead of one ambiguous action: 🟨 Yellow (stays on),
+    🟥 Red, 🚑 Injury, or Other reason (with Cards off, just Injury/Other,
+    since there's no card to log). Anything other than a first yellow —
+    red, injury, other, or a second yellow — removes the player from the
+    pitch, clears any goalkeeper slot they held, and drops them into
+    `sentOff`, so they can never be selected for a sub again this match;
+    the match event log records which of those it was. A **second yellow
+    card is applied automatically**: logging it immediately sends the
+    player off with a clear alert explaining why, rather than leaving the
+    coach to separately notice the accumulation and remove them by hand.
+    Both yellows still count individually toward that player's card
+    totals in Stats (a second-yellow send-off is not also counted as a
+    red — the FAI/DDSL send-off outcome is the same either way, but it's
+    recorded distinctly from a straight red in the log).
+  - **Recover** — every name in the "Sent Off" list gets a "↩️ Recover"
+    button, for the two situations a send-off isn't actually final: an
+    injury that turns out fine, or a card logged against the wrong
+    player. It looks up why they're out (searching backward through the
+    event log for the specific card/send-off entry that put them there —
+    for a second-yellow send-off, that's the second yellow itself, not
+    their legitimate first one) and shows it in the dialog. Recovering
+    always clears `sentOff` so they're selectable for a sub again;
+    leaving "This was logged by mistake" unticked (the default) also
+    logs a "Back available" event and keeps the original card/send-off
+    on the record, for a real injury that's since cleared up. Ticking it
+    instead deletes the specific entry (or entries — a corrected second
+    yellow removes just that card and the auto-send-off, not the
+    player's genuine first yellow) so the log reads as if it never
+    happened, correcting a data-entry mistake without leaving a phantom
+    card or inflated stat behind. Either way, recovering only restores
+    bench eligibility — it never puts the player back on the pitch
+    itself; that's still a normal sub.
   - The goalkeeper is selected per period and kept out of the normal
     substitution rotation, with their own stint tracked separately; confirm
     or change who's in goal at any point, or when a new period starts.
@@ -175,18 +402,51 @@ see everything working immediately. Reset or clear that data any time from
   - Squad rules — configure pairs of players who should never both be on
     the bench at once (e.g. your only two keeper-capable defenders); the
     app warns (but never blocks) a substitution that would break this.
+  - **Substitution Plan** — a manual, coach-written rotation schedule
+    (`js/subPlan.js`), separate from the automatic fair-play suggestions
+    above: entries of "this player on for that player, at minute X,"
+    edited from a section on either the pre-match Squad tab or the live
+    match tracker (the same plan either way — anything set up before
+    kickoff carries straight into the live match). Live, each entry shows
+    a live "due in…" countdown (or "⏰ Due now" once its minute arrives)
+    and a one-tap "✅ Sub Now" button that runs the actual substitution
+    through the normal sub flow (same min-stint and squad-rule warnings
+    apply) and then drops that entry from the plan — but only once the
+    swap has actually happened; declining a warning leaves the entry in
+    place to try again. It's advisory only, exactly like everything else
+    here — nothing in the plan ever subs a player on its own. Each bench
+    player's own card also shows a "🕐 due" line — a static planned
+    minute pre-match, or a live countdown — for whichever plan entry has
+    them coming on next, so "how long until they're on" is visible at a
+    glance without opening the plan itself.
 - **Cards** — an opt-in Settings toggle (aimed at older age groups) that adds
   yellow/red card logging alongside send-offs; card counts show up in Stats.
 - **Stats** — a sortable leaderboard (appearances, minutes, goals, assists,
   saves, cards when enabled, Player-of-the-Match awards, times captained,
-  attendance %), full match history, and head-to-head records per opponent.
-  On a match day with more than one game, each player's minutes and
-  appearances count only what they actually played in that specific game —
-  the running day-total that the live fair-play banner shows (so it can
-  balance minutes across a whole match day, not just one game) is not
+  match attendance %), full match history, and head-to-head records per
+  opponent. On a match day with more than one game, each player's minutes
+  and appearances count only what they actually played in that specific
+  game — the running day-total that the live fair-play banner shows (so it
+  can balance minutes across a whole match day, not just one game) is not
   re-summed on top of it, so a player's season minutes don't double-count
   a match day, and a player who sat out the second match of a day doesn't
   pick up a phantom appearance just because their minutes carried over.
+  The leaderboard also includes a **Trn Att%** column — the share of
+  training sessions each player has attended, out of every session where
+  attendance was actually taken (separate from match attendance, since a
+  player can miss training but make every game, or vice versa). When a
+  **minimum playing time standard** is set (Settings, see below), a **PT%**
+  column appears too: each player's share of the total match minutes they
+  were actually available for (summed across every completed match they
+  were present at, whatever that match's own length), with a ⚠️ next to
+  anyone currently under the team's standard — the only place in the app
+  that actively checks a player's playing time against a target rather
+  than just reporting the raw minutes. A separate "🧤 Goalkeeper
+  Appearances" table breaks down how many times each player has gone in
+  goal, one column per half (or quarter, etc. — labelled off the team's
+  current period format) plus a season total, tallied from every completed
+  game's per-period keeper assignment. Only shows up once someone's
+  actually played in goal, and only lists players who have.
 - **Club logo** — upload an image in Settings (Team section) to replace the
   default Boot Room crest in the header with your own club badge. Resized
   automatically to a small header-sized image before saving, so a full-size
@@ -195,11 +455,15 @@ see everything working immediately. Reset or clear that data any time from
   default crest.
 - **Settings** — team name, age group, squad format, default match length
   (minutes per period + number of periods — each game can still set its
-  own when scheduled), minimum stint length, the equal-playing-time
-  toggle, cards toggle, squad rules, and a collapsible age-group format
-  guide (see below) with a one-tap "Suggest format" button that reads your
-  age group and fills in the squad format + match length for you.
-  Changing squad format (e.g.
+  own when scheduled), minimum stint length, a **minimum playing time
+  standard** (% of match minutes every player should get at minimum, over
+  the season — surfaced in Stats' PT% column, see above), the
+  equal-playing-time toggle, cards toggle, squad rules, and a collapsible
+  age-group format guide (see below) with a one-tap "Suggest format &
+  playing-time standard" button that reads your age group and fills in
+  the squad format, match length, *and* the minimum playing time standard
+  for you — the guide table's own "Min Play%" column shows what each band
+  gets. Changing squad format (e.g.
   7-a-side to 5-a-side) reshapes every upcoming lineup to fit — spots the
   new formation still has keep their player, anyone whose spot no longer
   exists just moves to the bench, so nobody's silently dropped and nothing
@@ -279,15 +543,22 @@ Settings includes a reference table of playing formats by age group, based
 on the FAI Player Development Plan that DDSL and most Irish schoolboy/
 schoolgirl leagues build their own rules on: 4v4 (no keeper) at U7, 5-a-side
 at U8–U9, 7-a-side at U10–U11, 9-a-side at U12, and 11-a-side from U13 up,
-each with its own match length and pitch size.
+each with its own match length, pitch size, and minimum playing time
+standard (the table's "Min Play%" column). The U13/U14+ figures come
+directly from the FAI's own published minimum-minutes guidance for those
+bands, converted to a percentage of that band's total match length; U7–U12
+(the FAI's development phase, where the guidance is that younger players
+need *more* guaranteed time, not less) carries the ~50% figure that's the
+common general benchmark for equal playing time at that age.
 
 Worth knowing: this session's network policy blocked direct access to
 ddsl.ie, so the table is sourced from the public FAI plan and reporting
 about DDSL rather than DDSL's own rule book (which is linked from
 [ddsl.ie](https://ddsl.ie/) if you want to check the current one directly)
 — DDSL has in the past run U11/U12 differently from the standard FAI
-format, so it's worth confirming your age group's exact rules with your
-league before relying on the suggestion.
+format, so it's worth confirming your age group's exact rules (including
+its exact playing-time policy) with your league before relying on the
+suggestion.
 
 ## Project structure
 
@@ -298,11 +569,20 @@ js/
   main.js          entry point + hash router
   store.js         in-memory state + localStorage persistence + pub/sub
   seed.js          sample data
-  formations.js    pitch formation templates per squad size
+  formations.js    default formation shapes per squad size + custom-
+                   formation builder (evenly-laid-out DEF/MID/FWD counts)
   ageFormats.js    DDSL/FAI age-group format reference + suggestion logic
+  starterDrills.js ~45 curated real drills (name/description/link/tags/
+                   ageGroups, a dozen with an inline-SVG diagram) loaded
+                   in one tap via the Drill Library's "📚 Load Starter
+                   Drill Pack" button
   importRoster.js  CSV/Excel parsing + header-alias mapping for bulk import
   errorLog.js      on-device uncaught-error capture for Settings > Diagnostics
   rules.js         "keep at least one on the pitch" pair-rule checking
+  subPlan.js       manual Substitution Plan — shared list/form UI used by
+                   both the pre-match Squad tab and the live match tracker
+  trainingGroups.js clusters players by skill stream into training groups
+                   (opposite goal from balanceTeams.js's even spread)
   modal.js         small <dialog>-based modal helper, plus confirmDialog()/
                    alertDialog() — used everywhere instead of window.confirm()/
                    alert(), since a page embedded in an iframe (e.g. this app's
@@ -319,8 +599,12 @@ js/
     schedule.js
     gameDetail.js  RSVP tab + Squad (attendance + lineup) tab
     liveGame.js    live match tracker (and read-only summary once completed)
+    training.js    Training list/detail: attendance, groups, session planner
+    drills.js      Drill Library: CRUD + weblink/PDF/image attachments,
+                   with a storage-quota pre-check before saving
     stats.js       leaderboard, history, head-to-head
     settings.js
+    help.js
 ```
 
 ## Notes / next steps

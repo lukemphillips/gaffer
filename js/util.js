@@ -137,7 +137,7 @@ export function tryDownloadFile(filename, text) {
 // maxDim, preserving aspect ratio, and returns it as a PNG data URL — a
 // photo taken straight off a phone can be several MB, which would bloat
 // localStorage badly for what's only ever shown as a small header badge.
-export function resizeImageFile(file, maxDim = 160) {
+export function resizeImageFile(file, maxDim = 160, { mimeType = 'image/png', quality } = {}) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(reader.error || new Error('Could not read that file.'));
@@ -152,12 +152,22 @@ export function resizeImageFile(file, maxDim = 160) {
         canvas.width = w;
         canvas.height = h;
         canvas.getContext('2d').drawImage(img, 0, 0, w, h);
-        resolve(canvas.toDataURL('image/png'));
+        resolve(canvas.toDataURL(mimeType, quality));
       };
       img.src = reader.result;
     };
     reader.readAsDataURL(file);
   });
+}
+
+// Human-readable file size for showing an attachment's footprint before a
+// coach commits to saving it — everything here lives in localStorage, which
+// has much less headroom than a normal file system.
+export function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export function streamBadgeHtml(stream) {
@@ -175,6 +185,17 @@ export function playerPositions(p) {
 
 export function formatPositions(p) {
   return playerPositions(p).join('/');
+}
+
+// The roster of players eligible for real fixtures — active players minus
+// any guests. Guests (visiting from another team for a joint training
+// session) are meant to show up in Training's Attendance, Groups, and
+// small-sided Matches tabs, but never in Schedule/RSVP, a game's Squad or
+// Lineup, Live Game, the squad-rule editor, Balance Teams, or Stats, since
+// they're never actually part of this team's real matches. Everywhere
+// training-related keeps using a plain `p.active` filter instead.
+export function matchEligiblePlayers(players) {
+  return players.filter((p) => p.active && !p.isGuest);
 }
 
 // Same "is a substitution worth suggesting right now" rule the live view's

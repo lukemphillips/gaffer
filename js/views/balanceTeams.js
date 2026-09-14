@@ -1,5 +1,5 @@
 import { getState, update, findGame } from '../store.js';
-import { escapeHtml, streamBadgeHtml, formatPositions, copyToClipboard, formatDate, sortByDateTime } from '../util.js';
+import { escapeHtml, streamBadgeHtml, formatPositions, copyToClipboard, formatDate, sortByDateTime, matchEligiblePlayers } from '../util.js';
 import { isJuniorAgeGroup } from '../ageFormats.js';
 import { formationFor, emptyLineupSlots } from '../formations.js';
 import { autoFillLineup } from './gameDetail.js';
@@ -50,7 +50,7 @@ function shuffle(list) {
   return arr;
 }
 
-function splitBalancedTeams(players, count) {
+export function splitBalancedTeams(players, count) {
   const buckets = new Map(STREAM_ORDER.map((s) => [s, []]));
   players.forEach((p) => {
     const key = STREAM_ORDER.includes(p.skillStream) ? p.skillStream : null;
@@ -95,10 +95,12 @@ function sendSquadToMatch(playerIds, gameId) {
   update((state) => {
     const g = state.games.find((x) => x.id === gameId);
     if (!g) return;
-    const formation = formationFor(state.team.squadFormat);
+    // Respects a formation the coach already picked for this game (e.g. on
+    // its Squad tab) rather than silently resetting it back to the default.
+    const formation = formationFor(state.team.squadFormat, g.formationId, state.team.customFormations || []);
     g.presentIds = [...playerIds];
     const presentPlayers = state.players.filter((p) => playerIds.includes(p.id));
-    g.lineup = { slots: autoFillLineup(formation, presentPlayers, emptyLineupSlots(formation.size)) };
+    g.lineup = { slots: autoFillLineup(formation, presentPlayers, emptyLineupSlots(formation)) };
   });
 }
 
@@ -109,7 +111,7 @@ function confirmOverwrite(targetGame) {
 
 export function renderBalanceTeams(app, gameId) {
   const { players, team, games } = getState();
-  const active = players.filter((p) => p.active);
+  const active = matchEligiblePlayers(players);
   const junior = isJuniorAgeGroup(team.ageGroup);
   const game = gameId ? findGame(gameId) : null;
   const upcoming = sortByDateTime(games.filter((g) => g.status === 'scheduled'));

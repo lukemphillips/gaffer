@@ -1,6 +1,6 @@
 import { getState, update, resetToSample, clearAllData, restoreFromBackup, mergeBackup, findPlayer, getAutoBackups, restoreAutoBackupById } from '../store.js';
-import { FORMATIONS, remapLineupToFormat } from '../formations.js';
-import { escapeHtml, uid, copyToClipboard, resizeImageFile } from '../util.js';
+import { PRESET_FORMATIONS, formationOptionsFor, buildCustomFormation, remapLineupToFormat } from '../formations.js';
+import { escapeHtml, uid, copyToClipboard, resizeImageFile, matchEligiblePlayers } from '../util.js';
 import { openModal, closeModal, confirmDialog, alertDialog } from '../modal.js';
 import { AGE_FORMATS, suggestFormatForAgeGroup } from '../ageFormats.js';
 import { getErrorLog, clearErrorLog, formatErrorLogText } from '../errorLog.js';
@@ -55,11 +55,11 @@ export function renderSettings(app) {
         <div class="field">
           <label>Format</label>
           <select name="squadFormat">
-            ${Object.values(FORMATIONS).map((f) => `<option value="${f.size}" ${team.squadFormat === f.size ? 'selected' : ''}>${f.label}</option>`).join('')}
+            ${Object.keys(PRESET_FORMATIONS).map(Number).map((size) => `<option value="${size}" ${team.squadFormat === size ? 'selected' : ''}>${size}-a-side</option>`).join('')}
           </select>
         </div>
       </div>
-      <button type="button" class="btn ghost sm" data-action="suggest-format">Suggest format for this age group</button>
+      <button type="button" class="btn ghost sm" data-action="suggest-format">Suggest format &amp; playing-time standard for this age group</button>
       <div class="field-row">
         <div class="field">
           <label>Default minutes per period</label>
@@ -74,6 +74,11 @@ export function renderSettings(app) {
       <div class="field">
         <label>Minimum minutes on the pitch before a sub</label>
         <input type="number" name="minStintMinutes" min="0" max="30" step="1" value="${team.minStintMinutes ?? 4}" />
+      </div>
+      <div class="field">
+        <label>Minimum playing time standard (% of match minutes)</label>
+        <input type="number" name="minPlayingTimePercent" min="0" max="100" step="5" placeholder="e.g. 50" value="${team.minPlayingTimePercent ?? ''}" />
+        <p class="muted small" style="margin:4px 0 0;">The share of a match's total minutes every player should get at minimum, over the season — shown in Stats so you can see who's falling short. "Suggest format for this age group" below fills this in from the FAI/DDSL guide too.</p>
       </div>
       <label class="checkbox-row">
         <input type="checkbox" name="equalPlayingTimePolicy" ${team.equalPlayingTimePolicy ? 'checked' : ''} />
@@ -102,6 +107,7 @@ export function renderSettings(app) {
               <th style="text-align:left; padding:5px 6px;">Format</th>
               <th style="text-align:left; padding:5px 6px;">Duration</th>
               <th style="text-align:left; padding:5px 6px;">Pitch</th>
+              <th style="text-align:left; padding:5px 6px;">Min Play%</th>
             </tr>
           </thead>
           <tbody>
@@ -111,13 +117,25 @@ export function renderSettings(app) {
                 <td style="padding:5px 6px;">${b.squadFormat ? b.squadFormat + '-a-side' : '4v4 (no GK)'}</td>
                 <td style="padding:5px 6px;">${b.numPeriods} × ${b.periodMinutes} min</td>
                 <td style="padding:5px 6px;">${escapeHtml(b.pitch)}</td>
+                <td style="padding:5px 6px;">${b.minPlayingTimePercent != null ? b.minPlayingTimePercent + '%' : '—'}</td>
               </tr>
-              ${b.notes ? `<tr><td colspan="4" class="muted" style="padding:0 6px 6px;">${escapeHtml(b.notes)}</td></tr>` : ''}
+              ${b.notes ? `<tr><td colspan="5" class="muted" style="padding:0 6px 6px;">${escapeHtml(b.notes)}</td></tr>` : ''}
             `).join('')}
           </tbody>
         </table>
       </div>
     </details>
+
+    <div class="section-title">Formations</div>
+    <div class="card">
+      <p class="muted small mt-0">Beyond the built-in default suggestions offered on a game's Squad tab (a few common shapes per squad size), you can build your own — pick how many defenders, midfielders, and forwards, and it lays them out on the pitch for you. Only shows up for games using your team's current ${team.squadFormat}-a-side format.</p>
+      <div class="stack">
+        ${(team.customFormations || []).length
+          ? team.customFormations.map((f) => formationRow(f)).join('')
+          : '<p class="muted small">No custom formations yet.</p>'}
+      </div>
+      <button class="btn secondary block" data-action="add-formation" style="margin-top:10px;">+ Create Formation</button>
+    </div>
 
     <div class="section-title">Squad Rules</div>
     <div class="card">
@@ -193,14 +211,17 @@ export function renderSettings(app) {
       alertDialog('Enter an age group with a number in it (e.g. "U10") to get a suggestion.');
       return;
     }
+    if (band.minPlayingTimePercent != null) {
+      form.querySelector('[name="minPlayingTimePercent"]').value = String(band.minPlayingTimePercent);
+    }
     if (!band.squadFormat) {
-      alertDialog(`${band.label}: ${band.notes}`);
+      alertDialog(`${band.label}: ${band.notes}${band.minPlayingTimePercent != null ? ` Minimum playing time standard set to ${band.minPlayingTimePercent}%.` : ''}`);
       return;
     }
     form.querySelector('[name="squadFormat"]').value = String(band.squadFormat);
     form.querySelector('[name="periodMinutes"]').value = String(band.periodMinutes);
     form.querySelector('[name="numPeriods"]').value = String(band.numPeriods);
-    alertDialog(`Suggested ${band.label} format applied: ${band.squadFormat}-a-side, ${band.numPeriods} × ${band.periodMinutes} min.${band.notes ? ' ' + band.notes : ''} Review and hit Save Team Settings to keep it.`);
+    alertDialog(`Suggested ${band.label} format applied: ${band.squadFormat}-a-side, ${band.numPeriods} × ${band.periodMinutes} min, minimum playing time standard ${band.minPlayingTimePercent}%.${band.notes ? ' ' + band.notes : ''} Review and hit Save Team Settings to keep it.`);
   });
 
   app.querySelector('#team-form').addEventListener('submit', (e) => {
@@ -226,6 +247,7 @@ export function renderSettings(app) {
       state.team.periodMinutes = Number(fd.get('periodMinutes')) || state.team.periodMinutes;
       state.team.numPeriods = Number(fd.get('numPeriods')) || state.team.numPeriods;
       state.team.minStintMinutes = fd.get('minStintMinutes') === '' ? 0 : Number(fd.get('minStintMinutes'));
+      state.team.minPlayingTimePercent = fd.get('minPlayingTimePercent') === '' ? null : Number(fd.get('minPlayingTimePercent'));
       state.team.equalPlayingTimePolicy = fd.get('equalPlayingTimePolicy') === 'on';
       state.team.subAlertsEnabled = fd.get('subAlertsEnabled') === 'on';
       state.team.enableCards = fd.get('enableCards') === 'on';
@@ -236,7 +258,13 @@ export function renderSettings(app) {
         // bench, so nobody is silently dropped or stranded in a slot the
         // pitch no longer renders.
         state.games.forEach((g) => {
-          if (g.status !== 'completed') g.lineup = { slots: remapLineupToFormat(g.lineup?.slots, newFormat) };
+          if (g.status !== 'completed') {
+            // A chosen formation belongs to one squad size — carrying its
+            // id over to a resized game would point at a shape that no
+            // longer applies, so fall back to the new size's own default.
+            g.formationId = null;
+            g.lineup = { slots: remapLineupToFormat(g.lineup?.slots, newFormat) };
+          }
         });
       }
     });
@@ -301,6 +329,23 @@ export function renderSettings(app) {
     });
   }
 
+  app.querySelector('[data-action="add-formation"]').addEventListener('click', () => openFormationForm(team.squadFormat));
+  app.querySelectorAll('[data-action="edit-formation"]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const existing = (getState().team.customFormations || []).find((f) => f.id === btn.dataset.id);
+      if (existing) openFormationForm(team.squadFormat, existing);
+    });
+  });
+  app.querySelectorAll('[data-action="delete-formation"]').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      if (!(await confirmDialog('Delete this formation? Any game currently using it falls back to a default suggestion instead.', { okLabel: 'Delete', danger: true }))) return;
+      update((state) => {
+        state.team.customFormations = (state.team.customFormations || []).filter((f) => f.id !== btn.dataset.id);
+        state.games.forEach((g) => { if (g.formationId === btn.dataset.id) g.formationId = null; });
+      });
+    });
+  });
+
   app.querySelector('[data-action="add-rule"]').addEventListener('click', () => openRuleForm(players));
   app.querySelectorAll('[data-action="remove-rule"]').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -348,6 +393,115 @@ function errorCountText(errorLog) {
   const last = errorLog[errorLog.length - 1];
   const when = new Date(last.at).toLocaleString();
   return `${errorLog.length} error${errorLog.length === 1 ? '' : 's'} logged — most recent ${when}.`;
+}
+
+function formationRow(f) {
+  return `
+    <div class="card-row">
+      <span class="small">${escapeHtml(f.label)} <span class="muted">(${f.def} DEF · ${f.mid} MID · ${f.fwd} FWD)</span></span>
+      <div class="row" style="gap:6px;">
+        <button class="icon-btn" data-action="edit-formation" data-id="${f.id}" aria-label="Edit formation">✏️</button>
+        <button class="btn ghost sm" data-action="delete-formation" data-id="${f.id}">Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function openFormationForm(squadFormat, existing) {
+  const outfieldNeeded = squadFormat - 1;
+  const pf = existing || { label: '', def: Math.max(1, Math.round(outfieldNeeded * 0.4)), mid: Math.max(1, Math.round(outfieldNeeded * 0.35)), fwd: 0 };
+  pf.fwd = existing ? existing.fwd : Math.max(0, outfieldNeeded - pf.def - pf.mid);
+
+  openModal({
+    title: existing ? 'Edit Formation' : 'Create Formation',
+    bodyHtml: `
+      <form id="formation-form" class="stack">
+        <p class="muted small mt-0">For your team's current ${squadFormat}-a-side format — that's 1 goalkeeper plus ${outfieldNeeded} outfield players to place across defenders, midfielders, and forwards.</p>
+        <div class="field">
+          <label>Name</label>
+          <input type="text" name="label" required value="${escapeHtml(pf.label)}" placeholder="e.g. 3-4 Press" />
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label>Defenders</label>
+            <input type="number" name="def" min="0" max="${outfieldNeeded}" value="${pf.def}" />
+          </div>
+          <div class="field">
+            <label>Midfielders</label>
+            <input type="number" name="mid" min="0" max="${outfieldNeeded}" value="${pf.mid}" />
+          </div>
+          <div class="field">
+            <label>Forwards</label>
+            <input type="number" name="fwd" min="0" max="${outfieldNeeded}" value="${pf.fwd}" />
+          </div>
+        </div>
+        <div id="formation-total" class="small muted"></div>
+        <div id="formation-form-error" class="small" style="color:var(--red);" hidden></div>
+        <div class="modal-actions">
+          <button type="submit" class="btn block">${existing ? 'Save' : 'Create'}</button>
+          ${existing ? '<button type="button" class="btn danger" data-action="delete-formation-inline">Delete</button>' : ''}
+        </div>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      const form = modalEl.querySelector('#formation-form');
+      const totalEl = modalEl.querySelector('#formation-total');
+      const errorEl = modalEl.querySelector('#formation-form-error');
+      const defInput = form.querySelector('[name="def"]');
+      const midInput = form.querySelector('[name="mid"]');
+      const fwdInput = form.querySelector('[name="fwd"]');
+
+      const refreshTotal = () => {
+        const total = 1 + (Number(defInput.value) || 0) + (Number(midInput.value) || 0) + (Number(fwdInput.value) || 0);
+        const target = squadFormat;
+        totalEl.textContent = `Total: ${total} of ${target} players (including goalkeeper)`;
+        totalEl.style.color = total === target ? '' : 'var(--red)';
+      };
+      refreshTotal();
+      [defInput, midInput, fwdInput].forEach((el) => el.addEventListener('input', refreshTotal));
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        errorEl.hidden = true;
+        const fd = new FormData(form);
+        const label = (fd.get('label') || '').trim();
+        const def = Number(fd.get('def')) || 0;
+        const mid = Number(fd.get('mid')) || 0;
+        const fwd = Number(fd.get('fwd')) || 0;
+        if (!label) return;
+        let formation;
+        try {
+          formation = buildCustomFormation({ id: existing?.id, size: squadFormat, label, def, mid, fwd });
+        } catch (err) {
+          errorEl.textContent = err.message;
+          errorEl.hidden = false;
+          return;
+        }
+        update((state) => {
+          state.team.customFormations = state.team.customFormations || [];
+          if (existing) {
+            const idx = state.team.customFormations.findIndex((f) => f.id === existing.id);
+            if (idx !== -1) state.team.customFormations[idx] = formation;
+          } else {
+            state.team.customFormations.push(formation);
+          }
+        });
+        closeModal();
+      });
+
+      const inlineDeleteBtn = modalEl.querySelector('[data-action="delete-formation-inline"]');
+      if (inlineDeleteBtn) {
+        inlineDeleteBtn.addEventListener('click', async () => {
+          if (!(await confirmDialog('Delete this formation? Any game currently using it falls back to a default suggestion instead.', { okLabel: 'Delete', danger: true }))) return;
+          update((state) => {
+            state.team.customFormations = (state.team.customFormations || []).filter((f) => f.id !== existing.id);
+            state.games.forEach((g) => { if (g.formationId === existing.id) g.formationId = null; });
+          });
+          closeModal();
+        });
+      }
+    },
+  });
 }
 
 function ruleRow(r) {
@@ -403,6 +557,8 @@ function openMergeModal(app) {
         if (summary.gamesUpdated) parts.push(`${summary.gamesUpdated} game${summary.gamesUpdated === 1 ? '' : 's'} updated`);
         if (summary.playersAdded) parts.push(`${summary.playersAdded} player${summary.playersAdded === 1 ? '' : 's'} added`);
         if (summary.awardsAdded) parts.push(`${summary.awardsAdded} weekly award${summary.awardsAdded === 1 ? '' : 's'} added`);
+        if (summary.trainingsAdded) parts.push(`${summary.trainingsAdded} training session${summary.trainingsAdded === 1 ? '' : 's'} added`);
+        if (summary.drillsAdded) parts.push(`${summary.drillsAdded} drill${summary.drillsAdded === 1 ? '' : 's'} added`);
         alertDialog(parts.length ? `Merged: ${parts.join(', ')}. An automatic backup of the combined data was just saved on this device too.` : 'Nothing new to merge in — this device already had everything from that backup.');
         renderSettings(app);
       });
@@ -452,9 +608,9 @@ function openRestoreModal() {
 }
 
 function openRuleForm(players) {
-  const active = players.filter((p) => p.active);
+  const active = matchEligiblePlayers(players);
   if (active.length < 2) {
-    alertDialog('You need at least two active players to set a rule.');
+    alertDialog('You need at least two active, non-guest players to set a rule.');
     return;
   }
   const options = (excludeId) => active

@@ -1,5 +1,5 @@
 import { getState, shouldOfferAutoBackupRestore, getAutoBackups, restoreAutoBackupById, dismissAutoBackupPrompt } from '../store.js';
-import { formatDate, formatTime, sortByDateTime, escapeHtml as escape } from '../util.js';
+import { formatDate, formatTime, sortByDateTime, escapeHtml as escape, matchEligiblePlayers } from '../util.js';
 
 function rsvpCounts(game, activePlayers) {
   const counts = { yes: 0, no: 0, maybe: 0, pending: 0 };
@@ -12,7 +12,7 @@ function rsvpCounts(game, activePlayers) {
 
 export function renderDashboard(app) {
   const { team, players, games } = getState();
-  const activePlayers = players.filter((p) => p.active);
+  const activePlayers = matchEligiblePlayers(players);
   const upcoming = sortByDateTime(games.filter((g) => g.status !== 'completed'));
   const nextGame = upcoming[0] || null;
   const recentCompleted = sortByDateTime(games.filter((g) => g.status === 'completed')).reverse()[0] || null;
@@ -47,9 +47,13 @@ export function renderDashboard(app) {
     ` : ''}
 
     <div class="section-title">Quick Links</div>
-    <div class="fab-row">
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:8px;">
       <a class="btn secondary block" href="#/roster">👥 Roster (${activePlayers.length})</a>
       <a class="btn secondary block" href="#/schedule">📅 Schedule (${upcoming.length})</a>
+      <a class="btn secondary block" href="#/training">🏃 Training</a>
+      <a class="btn secondary block" href="#/stats">📊 Stats</a>
+      <a class="btn secondary block" href="#/settings">⚙️ Settings</a>
+      <a class="btn secondary block" href="#/help">❓ Help &amp; How-To</a>
     </div>
   `;
 

@@ -1,4 +1,4 @@
-import { seedTeam, seedPlayers, seedGames, seedRules, emptyTeam } from './seed.js';
+import { seedTeam, seedPlayers, seedGames, seedRules, seedTrainings, seedDrills, emptyTeam } from './seed.js';
 import { uid } from './util.js';
 
 const STORAGE_KEY = 'ysg-data-v2';
@@ -19,13 +19,15 @@ function sampleData() {
   const players = seedPlayers();
   team.rules = seedRules(players);
   const games = seedGames(players, team.squadFormat);
-  return { team, players, games };
+  const trainings = seedTrainings(players);
+  const drills = seedDrills();
+  return { team, players, games, trainings, drills };
 }
 
 // A genuinely blank slate — what a coach sees the first time they open the
 // app, and what "Clear All Data" resets to.
 function emptyData() {
-  return { team: emptyTeam(), players: [], games: [] };
+  return { team: emptyTeam(), players: [], games: [], trainings: [], drills: [] };
 }
 
 function load() {
@@ -39,6 +41,11 @@ function load() {
     try {
       const parsed = JSON.parse(raw);
       if (parsed && parsed.team && Array.isArray(parsed.players) && Array.isArray(parsed.games)) {
+        // trainings/drills are newer than the rest of the shape — default
+        // them in for data saved before they existed, rather than rejecting
+        // the save.
+        if (!Array.isArray(parsed.trainings)) parsed.trainings = [];
+        if (!Array.isArray(parsed.drills)) parsed.drills = [];
         return parsed;
       }
     } catch (e) {
@@ -64,6 +71,24 @@ export function getState() {
 export function update(mutator) {
   mutator(getState());
   persist();
+  listeners.forEach((fn) => fn(state));
+}
+
+// Same as update() — mutates state and persists it — but skips notifying
+// subscribers, so it doesn't trigger the full-page re-render that
+// subscribe(route) normally does. Meant only for the once-a-second
+// clock ticks that just bump elapsedSeconds: notifying on every one of
+// those tears down and rebuilds whatever's currently on screen every
+// single second, which on a phone can cancel a tap that lands right as
+// the DOM node it's on gets replaced out from under it (a genuine
+// substitution or block change is the one case that still warrants a
+// real render — call notifyListeners() for those).
+export function updateSilently(mutator) {
+  mutator(getState());
+  persist();
+}
+
+export function notifyListeners() {
   listeners.forEach((fn) => fn(state));
 }
 
@@ -94,6 +119,10 @@ export function restoreFromBackup(data) {
   if (!data || !data.team || !Array.isArray(data.players) || !Array.isArray(data.games)) {
     throw new Error('That doesn\'t look like a Boot Room backup — expected an object with team, players, and games.');
   }
+  // trainings/drills are newer than the rest of the backup shape — default
+  // them in for a backup taken before they existed, rather than rejecting it.
+  if (!Array.isArray(data.trainings)) data.trainings = [];
+  if (!Array.isArray(data.drills)) data.drills = [];
   state = data;
   persist();
   listeners.forEach((fn) => fn(state));
@@ -124,7 +153,7 @@ export function mergeBackup(data) {
     throw new Error('That doesn\'t look like a Boot Room backup — expected an object with team, players, and games.');
   }
   const s = getState();
-  let playersAdded = 0, gamesAdded = 0, gamesUpdated = 0, awardsAdded = 0;
+  let playersAdded = 0, gamesAdded = 0, gamesUpdated = 0, awardsAdded = 0, trainingsAdded = 0, drillsAdded = 0;
 
   const localPlayerIds = new Set(s.players.map((p) => p.id));
   data.players.forEach((p) => {
@@ -163,14 +192,65 @@ export function mergeBackup(data) {
     });
   }
 
+  // Training sessions aren't co-edited the way a live match can be (there's
+  // no "further along" to compare), so this is a plain union by id: add
+  // whatever the incoming side has that isn't already here, and otherwise
+  // leave the local copy alone.
+  const incomingTrainings = data.trainings || [];
+  if (incomingTrainings.length) {
+    s.trainings = s.trainings || [];
+    const localTrainingIds = new Set(s.trainings.map((t) => t.id));
+    incomingTrainings.forEach((t) => {
+      if (!localTrainingIds.has(t.id)) {
+        s.trainings.push(t);
+        localTrainingIds.add(t.id);
+        trainingsAdded += 1;
+      }
+    });
+  }
+
+  // Drills are a shared reference library rather than per-match data, but
+  // the same "add whatever's missing, never overwrite" union still applies
+  // — a coach's own edits to a drill already on this device shouldn't be
+  // clobbered by a merge.
+  const incomingDrills = data.drills || [];
+  if (incomingDrills.length) {
+    s.drills = s.drills || [];
+    const localDrillIds = new Set(s.drills.map((d) => d.id));
+    incomingDrills.forEach((d) => {
+      if (!localDrillIds.has(d.id)) {
+        s.drills.push(d);
+        localDrillIds.add(d.id);
+        drillsAdded += 1;
+      }
+    });
+  }
+
   persist();
   listeners.forEach((fn) => fn(state));
   // A merge combines two coaches' otherwise-separate work into something
   // that doesn't exist anywhere else yet — snapshot it immediately rather
   // than leaving it unprotected until the next match end or a manual
   // Backup Team Data tap.
-  if (playersAdded || gamesAdded || gamesUpdated || awardsAdded) saveAutoBackup();
-  return { playersAdded, gamesAdded, gamesUpdated, awardsAdded };
+  if (playersAdded || gamesAdded || gamesUpdated || awardsAdded || trainingsAdded || drillsAdded) saveAutoBackup();
+  return { playersAdded, gamesAdded, gamesUpdated, awardsAdded, trainingsAdded, drillsAdded };
+}
+
+// Best-effort check for whether a candidate state would actually fit in
+// localStorage before committing to it — used before saving a drill with an
+// attachment, since a PDF/image (unlike the rest of this app's data) can be
+// large enough to hit the browser's per-origin storage quota on its own.
+// Writes to a scratch key rather than trusting JSON.stringify succeeding,
+// since stringify can't fail from quota — only the actual write can.
+export function hasStorageRoomFor(candidateState) {
+  const TEST_KEY = '__ysg_quota_test__';
+  try {
+    localStorage.setItem(TEST_KEY, JSON.stringify(candidateState));
+    localStorage.removeItem(TEST_KEY);
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 function loadAutoBackups() {
@@ -246,4 +326,12 @@ export function findPlayer(id) {
 
 export function findGame(id) {
   return getState().games.find((g) => g.id === id) || null;
+}
+
+export function findTraining(id) {
+  return getState().trainings.find((t) => t.id === id) || null;
+}
+
+export function findDrill(id) {
+  return getState().drills.find((d) => d.id === id) || null;
 }
