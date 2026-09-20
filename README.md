@@ -29,7 +29,7 @@ see everything working immediately. Reset or clear that data any time from
 ## Features
 
 - **Home** — the next game (with an RSVP summary) and the last result up
-  top, then a Quick Links grid to every other section — Roster, Schedule,
+  top, then a Quick Links grid to every other section — Roster, Matchday,
   Training, Stats, Settings, and Help & How-To.
 - **Roster** — players with jersey number, one or more preferred positions
   (a versatile player can be both DEF and MID, say), guardian contact, a
@@ -50,7 +50,7 @@ see everything working immediately. Reset or clear that data any time from
   combining with another team for a joint training session. A guest shows
   up for Training's Attendance, Groups, and small-sided Matches tabs (so
   numbers work out for drills and scrimmages), but is excluded everywhere
-  match-related: Schedule/RSVP, a game's Squad and Lineup, Live Game, the
+  match-related: Matchday/RSVP, a game's Squad and Lineup, Live Game, the
   squad-rule editor, Balance Teams, and Stats — since they're not actually
   part of your team for real fixtures. The Roster header splits out the
   guest count separately from "active players" for that reason. The
@@ -86,7 +86,7 @@ see everything working immediately. Reset or clear that data any time from
   a shuffled split could vanish if you navigated away before doing anything
   with it — now the split itself is safe to leave and come back to, and
   once you send a team to a match, that choice is saved for good.
-- **Schedule** — League / Friendly / Tournament fixtures (tournament games
+- **Matchday** — League / Friendly / Tournament fixtures (tournament games
   carry a tournament name + stage, e.g. "Summer Cup · Final"), each with its
   own match length: "+ Add Game" pre-fills minutes-per-period and number of
   periods from your team's defaults (set in Settings), but either can be
@@ -120,7 +120,7 @@ see everything working immediately. Reset or clear that data any time from
   match. Once a game is live or completed, deleting it moves to Edit
   Game's Delete button instead, so match history and stats aren't one
   accidental tap away.
-- **Training** — a separate section from Schedule for practices rather than
+- **Training** — a separate section from Matchday for practices rather than
   matches. "+ Add Training" creates a session with a date, time, and
   location; each session has four tabs:
   - **Attendance** — tap players to mark who's actually shown up, same
@@ -337,15 +337,34 @@ see everything working immediately. Reset or clear that data any time from
   - A match clock that keeps running in real time no matter what screen
     you're on — step away to the Squad tab, Roster, wherever, and it's
     still accurate when you come back.
+  - The big clock display always shows time elapsed in the **current
+    half/period only**, resetting to 0:00 the moment a new period starts
+    — so the 2nd half's clock can't look like it's carrying on from
+    wherever you paused it in the 1st. A smaller "Total" reading next to
+    it still tracks the whole match (what a completed game's "Full time"
+    shows), and the "Time's up" banner is keyed off the current period's
+    own elapsed time too, so a period that started early or late still
+    gets its full scheduled length before the banner fires.
   - Rolling substitutions: unlimited subs, paired ("who's on, then who's
     off") with an "add to pitch" option when there's a spare spot.
-  - **Live pitch + tap-to-substitute** — the same visual pitch from the
-    pre-match Squad tab carries into the live match, kept in sync with
-    who's actually on the field (including subs and send-offs as they
-    happen). Tap any on-field player on the pitch to open a small
-    "Substitute" dropdown of bench players — pick one and the swap runs
-    through the normal sub flow (min-stint and squad-rule warnings still
-    apply) — no need to scroll down to the bench section first. The
+  - **Live pitch + tap-to-substitute (or swap)** — the same visual pitch
+    from the pre-match Squad tab carries into the live match, kept in sync
+    with who's actually on the field (including subs and send-offs as
+    they happen). Tap any on-field player on the pitch to open a dropdown
+    with two option groups: "Bring on from bench" — pick a bench player
+    and the swap runs through the normal sub flow (min-stint and
+    squad-rule warnings still apply), no need to scroll down to the bench
+    section first — or "Swap positions with" — pick another on-field
+    teammate and the two of them simply trade formation slots, no one
+    comes off, nothing about playing time or the bench changes, just a
+    tactical reshuffle logged as its own event. With no bench players
+    present, the dropdown falls back to swap-only. An **empty
+    spot** works the bring-on way too: tap it to open a "Bring On" dropdown and
+    place a bench player straight into that exact position, no separate
+    outgoing player needed. The goalkeeper spot — filled or empty — always
+    opens the dedicated Change/Assign Goalkeeper dialog instead of the
+    normal substitute/fill flow, since that's the only place a keeper's
+    stint tracking and gk-change logging are set up correctly. The
     **Formation** dropdown also works mid-match: switching shapes remaps
     everyone's position onto the new layout without touching who's
     actually on the field, and any on-field player whose old slot id
@@ -357,11 +376,13 @@ see everything working immediately. Reset or clear that data any time from
     always override it.
   - Goals logged with scorer + optional assist; opponent goals logged with
     one tap.
-  - GK saves logged per player (or "open play"), with an editable minute.
-  - Removing a player from the match — every on-field player and the
-    goalkeeper has a removal button ("Card / Remove" with Cards enabled in
-    Settings, "Remove from Match" without) that opens a short "What
-    happened?" menu instead of one ambiguous action: 🟨 Yellow (stays on),
+  - GK saves logged with a single tap — recorded immediately for whoever
+    is currently in goal, at the live clock's current time, no dialog.
+  - Removing a player from the match — every on-field player (and the
+    goalkeeper) has the same small, deliberately understated "⋯" icon
+    (not a full-width red button, so it can't easily be caught by
+    accident while tapping the card itself to complete a substitution),
+    that opens a short "What happened?" menu instead of one ambiguous action: 🟨 Yellow (stays on),
     🟥 Red, 🚑 Injury, or Other reason (with Cards off, just Injury/Other,
     since there's no card to log). Anything other than a first yellow —
     red, injury, other, or a second yellow — removes the player from the
@@ -374,7 +395,13 @@ see everything working immediately. Reset or clear that data any time from
     Both yellows still count individually toward that player's card
     totals in Stats (a second-yellow send-off is not also counted as a
     red — the FAI/DDSL send-off outcome is the same either way, but it's
-    recorded distinctly from a straight red in the log).
+    recorded distinctly from a straight red in the log). A **🟨 Card** /
+    🚑 Remove button next to 🧤 GK Save offers a quicker path to the same
+    dialog: a player dropdown (same simple `<select>` pattern as the
+    Goalkeeper and Log Goal modals, listing on-field outfield players plus
+    the current keeper) followed by the same "What happened?" choice,
+    defaulting to Yellow — for when it's faster to pick a name from a list
+    than to find that specific player's own "⋯" icon on a busy screen.
   - **Recover** — every name in the "Sent Off" list gets a "↩️ Recover"
     button, for the two situations a send-off isn't actually final: an
     injury that turns out fine, or a card logged against the wrong
@@ -397,6 +424,18 @@ see everything working immediately. Reset or clear that data any time from
     substitution rotation, with their own stint tracked separately; confirm
     or change who's in goal at any point, or when a new period starts.
     Goalkeeping time counts toward that player's overall playing time.
+    Promoting an outfield player to keeper cleanly moves them off whatever
+    outfield slot they were holding, so the pitch never shows the same
+    player twice at once (once in goal, once still in their old spot).
+  - **Match Summary** — once a game is completed, "View Summary" on its
+    page (or the live screen itself once the match has ended) opens with a
+    distilled Match Summary card: ⚽ scorers (with assist tallies), 🧤
+    saves, and 🟨 cards, so you can see who did what at a glance instead of
+    reading back through the whole chronological log. That raw log is
+    still there — under a collapsed "Match Events" section — along with a
+    collapsed "Playing Time" breakdown; both are one tap away, kept out of
+    the way by default so a completed match's page doesn't read as a wall
+    of text.
   - Fair-play suggestions (optional, see Settings) that flag which bench
     player has the least playing time and which eligible on-field player has
     the most (respecting the minimum-stint rule) — a nudge, not an enforced
@@ -433,11 +472,18 @@ see everything working immediately. Reset or clear that data any time from
     apply) and then drops that entry from the plan — but only once the
     swap has actually happened; declining a warning leaves the entry in
     place to try again. It's advisory only, exactly like everything else
-    here — nothing in the plan ever subs a player on its own. Each bench
-    player's own card also shows a "🕐 due" line — a static planned
-    minute pre-match, or a live countdown — for whichever plan entry has
-    them coming on next, so "how long until they're on" is visible at a
-    glance without opening the plan itself.
+    here — nothing in the plan ever subs a player on its own. Every path
+    that brings a player onto the field (this one, the fair-play "Use
+    Suggestion" button, tapping a pitch spot, and "⬆ Add to Pitch")
+    shares one eligibility check first: if the incoming player is already
+    on the field, is the current goalkeeper, or has been sent off, nothing
+    happens except an explanatory alert — so a plan entry that's gone
+    stale (e.g. the planned "coming on" player has since been made
+    goalkeeper) can never put the same player on the field twice at once.
+    Each bench player's own card also shows a "🕐 due" line — a static
+    planned minute pre-match, or a live countdown — for whichever plan
+    entry has them coming on next, so "how long until they're on" is
+    visible at a glance without opening the plan itself.
 - **Cards** — an opt-in Settings toggle (aimed at older age groups) that adds
   yellow/red card logging alongside send-offs; card counts show up in Stats.
 - **Stats** — a sortable leaderboard (appearances, minutes, goals, assists,

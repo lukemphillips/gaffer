@@ -8,10 +8,19 @@ import { subPlanSectionHtml, openSubPlanEntryForm, benchDueLineHtml } from '../s
 
 let selectingInboundId = null;
 let lastGameId = null;
+// Whether the Playing Time / Match Events <details> are expanded — tracked
+// here rather than left to the browser's own `open` attribute, because the
+// live match clock re-renders this whole view every second (see main.js's
+// ticker). Without this, the freshly rendered HTML always starts collapsed,
+// so tapping one open just had it snap shut again within a second.
+let playingTimeOpen = false;
+let matchEventsOpen = false;
 
 export function renderLiveGame(app, gameId) {
   if (lastGameId !== gameId) {
     selectingInboundId = null;
+    playingTimeOpen = false;
+    matchEventsOpen = false;
     lastGameId = gameId;
   }
 
@@ -38,6 +47,19 @@ export function renderLiveGame(app, gameId) {
   // instead of reading team.numPeriods/periodMinutes directly.
   const numPeriods = gameNumPeriods(game, team);
   const periodMinutes = gamePeriodMinutes(game, team);
+  // live.elapsedSeconds is the whole match's running total (used everywhere
+  // else — stints, the sub plan's minute markers, the event log) and never
+  // resets between periods. For the big on-screen clock, though, a coach
+  // wants to know how far into THIS half they are, not the cumulative
+  // total — showing the total made the 2nd half look like it "continued
+  // from" the 1st half's time instead of starting fresh. periodStartElapsed
+  // records the cumulative total at the moment each period began; older
+  // saved games that predate this field fall back to assuming every prior
+  // period ran its full scheduled length.
+  const periodStartElapsed = (live.periodStartElapsed && live.periodStartElapsed[live.currentPeriod] != null)
+    ? live.periodStartElapsed[live.currentPeriod]
+    : periodMinutes * 60 * (live.currentPeriod - 1);
+  const periodElapsedSeconds = Math.max(0, live.elapsedSeconds - periodStartElapsed);
   const nextMatch = games.find((g) => g.date === game.date && g.id !== game.id && g.status === 'scheduled');
   // A sibling that exists but isn't "scheduled" (already live, or already
   // finished) still means a match day opponent WAS added — worth saying so
@@ -51,7 +73,15 @@ export function renderLiveGame(app, gameId) {
   const presentIds = new Set(game.presentIds || []);
   const sentOffIds = new Set(live.sentOff || []);
   const currentGkId = live.gkByPeriod[live.currentPeriod] || null;
-  const onFieldOutfield = live.onField.map((id) => byId[id]).filter(Boolean);
+  // Defensive display-level cleanup: de-dupe live.onField and drop the
+  // current goalkeeper from it if either ever ended up there (e.g. from a
+  // stale Substitution Plan entry queued up before the eligibility guards
+  // below existed) — keeps an already-affected match from continuing to
+  // show the same player twice even before the coach takes any action.
+  const onFieldOutfield = [...new Set(live.onField)]
+    .filter((id) => id !== currentGkId)
+    .map((id) => byId[id])
+    .filter(Boolean);
   const currentGk = currentGkId ? byId[currentGkId] : null;
   const bench = active.filter((p) => presentIds.has(p.id) && !sentOffIds.has(p.id)
     && !live.onField.includes(p.id) && p.id !== currentGkId);
@@ -72,8 +102,8 @@ export function renderLiveGame(app, gameId) {
     ${!isCompleted ? `<a class="btn ghost sm" href="#/game/${game.id}/lineup" style="margin-bottom:12px; display:inline-flex;">👤 Squad tab — add a late arrival</a>` : ''}
 
     <div class="card timer-card">
-      <div class="timer-display">${formatClock(live.elapsedSeconds)}</div>
-      <div class="muted small">${isCompleted ? 'Full time' : periodLabel(numPeriods, live.currentPeriod) + ` · ${periodMinutes} min`}</div>
+      <div class="timer-display">${formatClock(isCompleted ? live.elapsedSeconds : periodElapsedSeconds)}</div>
+      <div class="muted small">${isCompleted ? 'Full time' : `${periodLabel(numPeriods, live.currentPeriod)} · ${periodMinutes} min · Total ${formatClock(live.elapsedSeconds)}`}</div>
 
       <div class="score-board">
         <div class="score-team">
@@ -95,6 +125,7 @@ export function renderLiveGame(app, gameId) {
         </div>
         <div class="timer-actions">
           <button class="btn ghost sm" data-action="log-save">🧤 GK Save</button>
+          <button class="btn ghost sm" data-action="open-card-picker">${team.enableCards ? '🟨 Card' : '🚑 Remove'}</button>
           ${live.currentPeriod < numPeriods
             ? `<button class="btn secondary sm" data-action="next-period">Next: ${periodLabel(numPeriods, live.currentPeriod + 1)}</button>`
             : ''}
@@ -110,17 +141,14 @@ export function renderLiveGame(app, gameId) {
       `}
     </div>
 
-    ${!isCompleted && live.elapsedSeconds >= periodMinutes * 60 * live.currentPeriod && live.currentPeriod < numPeriods
+    ${!isCompleted && periodElapsedSeconds >= periodMinutes * 60 && live.currentPeriod < numPeriods
       ? `<div class="banner warn spread"><span>⏱ Time's up for ${periodLabel(numPeriods, live.currentPeriod)}.</span><button class="btn sm" data-action="next-period">Start ${periodLabel(numPeriods, live.currentPeriod + 1)}</button></div>`
       : ''}
 
-    ${goalkeeperCardHtml(team, numPeriods, live, currentGk, isCompleted)}
+    ${isCompleted ? matchSummaryHtml(live) : ''}
 
     ${!isCompleted ? fairPlaySuggestionHtml(team, live, bench, onFieldOutfield, byId) : ''}
     ${!isCompleted ? upcomingSubsHtml(team, live, bench, onFieldOutfield) : ''}
-    ${!isCompleted && (onFieldOutfield.length || bench.length)
-      ? subPlanSectionHtml(game.subPlan || [], byId, { elapsedMinutes: live.elapsedSeconds / 60, showExecute: true })
-      : ''}
 
     ${!isCompleted && selectingInboundId ? `
       <div class="banner info spread">
@@ -137,7 +165,7 @@ export function renderLiveGame(app, gameId) {
           ${formationOptions.map((f) => `<option value="${f.id}" ${formation.id === f.id ? 'selected' : ''}>${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('')}
         </select>
       </div>
-      <div class="muted small" style="margin:0 0 8px;">Tap a player on the pitch to substitute them — pick who's coming on from the list, no need to scroll to the bench. Change the formation any time with the dropdown above.</div>
+      <div class="muted small" style="margin:0 0 8px;">Tap a pitch player to substitute.</div>
       <div class="pitch-wrap">
         <div class="pitch" id="live-pitch">
           ${formation.slots.map((slot) => livePitchSlotHtml(slot, slot.role === 'GK' ? currentGk : byId[game.lineup?.slots?.[slot.id]])).join('')}
@@ -146,6 +174,7 @@ export function renderLiveGame(app, gameId) {
     ` : ''}
 
     <div class="section-title">On Field (${onFieldOutfield.length}${isCompleted ? '' : ` / ${targetOutfield} target`})</div>
+    ${goalkeeperCardHtml(team, numPeriods, live, currentGk, isCompleted)}
     <div class="onfield-grid">
       ${onFieldOutfield.length ? onFieldOutfield.map((p) => fieldCardHtml(p, live, isCompleted, true, team, slotLabelById[slotByPlayerId[p.id]])).join('') : '<span class="muted small">No one is on the field.</span>'}
     </div>
@@ -155,6 +184,9 @@ export function renderLiveGame(app, gameId) {
       <div class="onfield-grid">
         ${bench.length ? bench.map((p) => benchCardHtml(p, live, game.subPlan || [])).join('') : '<span class="muted small">No one available on the bench.</span>'}
       </div>
+      ${(onFieldOutfield.length || bench.length)
+        ? subPlanSectionHtml(game.subPlan || [], byId, { elapsedMinutes: live.elapsedSeconds / 60, showExecute: true })
+        : ''}
     ` : ''}
 
     ${sentOffPlayers.length ? `
@@ -169,17 +201,21 @@ export function renderLiveGame(app, gameId) {
       </div>
     ` : ''}
 
-    <div class="section-title">Playing Time</div>
-    ${hasCarryover ? '<div class="muted small" style="margin:-6px 0 8px;">Includes minutes from earlier match(es) today, so fair-play suggestions stay balanced across the whole match day.</div>' : ''}
-    <div class="card">
-      ${playingTimeRows(active, live, presentIds)}
-    </div>
+    ${hasCarryover ? '<div class="muted small" style="margin:8px 0 -4px;">Playing Time below includes minutes from earlier match(es) today, so fair-play suggestions stay balanced across the whole match day.</div>' : ''}
+    <details class="card" style="margin-top:12px;" data-details-section="playing-time" ${playingTimeOpen ? 'open' : ''}>
+      <summary style="cursor:pointer; font-weight:700; font-size:13px;">⏱ Playing Time</summary>
+      <div style="margin-top:10px;">
+        ${playingTimeRows(active, live, presentIds)}
+      </div>
+    </details>
 
     ${live.subLog.length ? `
-      <div class="section-title">Match Events</div>
-      <div class="card">
-        ${live.subLog.slice().reverse().map((entry) => eventRowHtml(entry, numPeriods)).join('')}
-      </div>
+      <details class="card" style="margin-top:10px;" data-details-section="match-events" ${matchEventsOpen ? 'open' : ''}>
+        <summary style="cursor:pointer; font-weight:700; font-size:13px;">📋 Match Events (${live.subLog.length})</summary>
+        <div style="margin-top:10px;">
+          ${live.subLog.slice().reverse().map((entry) => eventRowHtml(entry, numPeriods)).join('')}
+        </div>
+      </details>
     ` : ''}
   `;
 
@@ -199,7 +235,21 @@ export function renderLiveGame(app, gameId) {
         g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'goal-them' });
       });
     });
-    app.querySelector('[data-action="log-save"]').addEventListener('click', () => openSaveModal(gameId, onPitchPool, currentGkId, live.elapsedSeconds));
+    app.querySelector('[data-action="log-save"]').addEventListener('click', () => {
+      // A single tap just records the save right now, credited to whoever
+      // is currently in goal — no dialog to fill in first, matching the
+      // "+1" one-tap pattern already used for the opponent's goal button.
+      update((state) => {
+        const g = state.games.find((x) => x.id === gameId);
+        const gkId = g.live.gkByPeriod[g.live.currentPeriod] || null;
+        const gk = gkId ? active.find((p) => p.id === gkId) : null;
+        g.live.subLog.push({
+          atSeconds: g.live.elapsedSeconds, type: 'save',
+          playerId: gkId, name: gk?.name || '',
+        });
+      });
+    });
+    app.querySelector('[data-action="open-card-picker"]').addEventListener('click', () => openQuickCardModal(gameId, onPitchPool, team));
 
     const gkChangeBtn = app.querySelector('[data-action="change-gk"]');
     if (gkChangeBtn) gkChangeBtn.addEventListener('click', () => openGkModal(gameId, active, presentIds, sentOffIds, live.currentPeriod, false));
@@ -336,6 +386,13 @@ export function renderLiveGame(app, gameId) {
     if (addBtn) {
       addBtn.addEventListener('click', () => {
         const inId = selectingInboundId;
+        const ineligible = ineligibleToBringOnReason(game, inId);
+        if (ineligible) {
+          selectingInboundId = null;
+          alertDialog(ineligible);
+          renderLiveGame(app, gameId);
+          return;
+        }
         const inPlayer = byId[inId];
         const inName = inPlayer?.name || '';
         update((state) => {
@@ -379,10 +436,42 @@ export function renderLiveGame(app, gameId) {
 
     app.querySelectorAll('[data-live-pitch-slot] [data-open-sub]').forEach((chip) => {
       chip.addEventListener('click', () => {
-        openPitchSubModal(gameId, chip.dataset.openSub, byId, team, bench);
+        const outId = chip.dataset.openSub;
+        const teammates = onFieldOutfield.filter((p) => p.id !== outId);
+        openPitchSubModal(gameId, outId, byId, team, bench, teammates);
+      });
+    });
+
+    app.querySelectorAll('[data-live-pitch-slot] [data-open-gk-change]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        openGkModal(gameId, active, presentIds, sentOffIds, live.currentPeriod, false);
+      });
+    });
+
+    app.querySelectorAll('[data-live-pitch-slot] [data-open-fill]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        if (chip.dataset.fillRole === 'GK') {
+          // The empty GK spot goes through the same Assign flow as the
+          // goalkeeper card's button — that's the only place a keeper is
+          // properly set (stint tracking, gk-change logging), so a plain
+          // pitch-fill would skip all of it.
+          openGkModal(gameId, active, presentIds, sentOffIds, live.currentPeriod, false);
+        } else {
+          openPitchFillModal(gameId, chip.dataset.openFill, byId, bench);
+        }
       });
     });
   }
+
+  // Keeps the Playing Time / Match Events <details> open across the
+  // once-a-second re-render the live match clock triggers — otherwise
+  // opening one just had it collapse again a moment later.
+  app.querySelectorAll('[data-details-section]').forEach((el) => {
+    el.addEventListener('toggle', () => {
+      if (el.dataset.detailsSection === 'playing-time') playingTimeOpen = el.open;
+      else if (el.dataset.detailsSection === 'match-events') matchEventsOpen = el.open;
+    });
+  });
 
   return undefined;
 }
@@ -416,33 +505,114 @@ function remapLiveFormation(oldSlots, onFieldIds, gkId, newFormation) {
 
 function livePitchSlotHtml(slot, player) {
   const initials = player ? (player.jerseyNumber ?? player.name.slice(0, 2).toUpperCase()) : (slot.role === 'GK' ? '🧤' : '+');
-  // The GK spot isn't tappable here — goalkeeper changes go through the
-  // dedicated Change/Assign button above, which also handles the
-  // stint-warning and gk-change logging a plain sub would skip.
-  const subbable = player && slot.role !== 'GK';
+  const isGk = slot.role === 'GK';
+  // An outfield spot with someone in it opens the normal Substitute picker;
+  // an occupied GK spot opens the dedicated Change Goalkeeper flow instead
+  // (same one the goalkeeper card's own "Change" button uses) — that's the
+  // only place a keeper change gets its stint-warning and gk-change
+  // logging, which a plain sub would skip.
+  const subbable = player && !isGk;
+  const gkChangeable = player && isGk;
+  // An empty spot — GK or outfield — is just as tappable as a filled one:
+  // pick who's coming on straight into that exact position, the same way
+  // tapping an occupied spot opens a substitute picker.
+  const fillable = !player;
   return `
     <div class="pitch-slot ${player ? '' : 'empty'}" data-live-pitch-slot="${slot.id}" style="left:${slot.x}%; top:${slot.y}%;">
-      <div class="chip ${subbable ? 'subbable' : ''}" ${subbable ? `data-open-sub="${player.id}"` : ''}>${initials}</div>
+      <div class="chip ${subbable || gkChangeable ? 'subbable' : ''} ${fillable ? 'fillable' : ''}"
+        ${subbable ? `data-open-sub="${player.id}"` : ''}
+        ${gkChangeable ? `data-open-gk-change="1"` : ''}
+        ${fillable ? `data-open-fill="${slot.id}" data-fill-role="${slot.role}"` : ''}
+      >${initials}</div>
       <div class="slot-label">${player ? escapeHtml(player.name.split(' ')[0]) : slot.role}</div>
     </div>
   `;
 }
 
-// Tapping a player straight off the pitch, rather than needing to
-// scroll down to the bench first — opens a small dropdown of who's
-// available to bring on and runs the substitution through the normal
-// flow (so min-stint and squad-rule warnings still apply).
-function openPitchSubModal(gameId, outId, byId, team, benchPlayers) {
+// Tapping a player straight off the pitch, rather than needing to scroll
+// down to the bench first — opens a dropdown offering two kinds of
+// options: bringing someone on from the bench (runs the normal sub flow,
+// so min-stint and squad-rule warnings still apply), or swapping pitch
+// positions with another on-field teammate (a tactical reshuffle — both
+// players stay on, nothing about playing time or the bench changes).
+function openPitchSubModal(gameId, outId, byId, team, benchPlayers, onFieldTeammates = []) {
   const outPlayer = byId[outId];
   if (!outPlayer) return;
-  if (!benchPlayers.length) {
-    alertDialog(`No bench players available to sub in for ${outPlayer.name}.`);
+  if (!benchPlayers.length && !onFieldTeammates.length) {
+    alertDialog(`No one else available to sub in or swap positions with for ${outPlayer.name}.`);
     return;
   }
   openModal({
-    title: `Substitute — ${escapeHtml(outPlayer.name)}`,
+    title: `${escapeHtml(outPlayer.name)}`,
     bodyHtml: `
       <form id="pitch-sub-form" class="stack">
+        <div class="field">
+          <label>Bring on, or swap positions with</label>
+          <select name="targetId" required>
+            <option value="" disabled selected>Select player</option>
+            ${benchPlayers.length ? `
+              <optgroup label="Bring on from bench">
+                ${benchPlayers.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+              </optgroup>
+            ` : ''}
+            ${onFieldTeammates.length ? `
+              <optgroup label="Swap positions with (both stay on)">
+                ${onFieldTeammates.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+              </optgroup>
+            ` : ''}
+          </select>
+        </div>
+        <button type="submit" class="btn block">Confirm</button>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      modalEl.querySelector('#pitch-sub-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const targetId = new FormData(e.target).get('targetId');
+        if (!targetId) return;
+        closeModal();
+        if (onFieldTeammates.some((p) => p.id === targetId)) {
+          swapPitchPositions(gameId, outId, targetId, byId);
+        } else {
+          applySub(gameId, targetId, outId, byId, team);
+        }
+      });
+    },
+  });
+}
+
+// Exchanges two on-field players' formation slots — no one comes off,
+// nothing about playing time, stint, or the bench changes, just which
+// spot each one occupies. Logged as its own event type so the match
+// record shows a tactical reshuffle rather than looking like a sub that
+// somehow never happened.
+function swapPitchPositions(gameId, playerAId, playerBId, byId) {
+  const aName = byId[playerAId]?.name || '';
+  const bName = byId[playerBId]?.name || '';
+  update((state) => {
+    const g = state.games.find((x) => x.id === gameId);
+    if (!g.lineup?.slots) return;
+    const slotIdA = Object.keys(g.lineup.slots).find((sid) => g.lineup.slots[sid] === playerAId);
+    const slotIdB = Object.keys(g.lineup.slots).find((sid) => g.lineup.slots[sid] === playerBId);
+    if (!slotIdA || !slotIdB) return;
+    g.lineup.slots[slotIdA] = playerBId;
+    g.lineup.slots[slotIdB] = playerAId;
+    g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'position-swap', aId: playerAId, aName, bId: playerBId, bName });
+  });
+}
+
+// Tapping an EMPTY pitch spot — no swap needed, just pick who's coming
+// on straight into that exact position. Same picker pattern as tapping a
+// filled spot (openPitchSubModal above), just adding rather than swapping.
+function openPitchFillModal(gameId, slotId, byId, benchPlayers) {
+  if (!benchPlayers.length) {
+    alertDialog('No bench players available to bring on here.');
+    return;
+  }
+  openModal({
+    title: 'Bring On',
+    bodyHtml: `
+      <form id="pitch-fill-form" class="stack">
         <div class="field">
           <label>Bring on</label>
           <select name="inId" required>
@@ -450,18 +620,40 @@ function openPitchSubModal(gameId, outId, byId, team, benchPlayers) {
             ${benchPlayers.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
           </select>
         </div>
-        <button type="submit" class="btn block">Substitute</button>
+        <button type="submit" class="btn block">Bring On</button>
       </form>
     `,
     onMount: (modalEl) => {
-      modalEl.querySelector('#pitch-sub-form').addEventListener('submit', (e) => {
+      modalEl.querySelector('#pitch-fill-form').addEventListener('submit', (e) => {
         e.preventDefault();
         const inId = new FormData(e.target).get('inId');
         if (!inId) return;
         closeModal();
-        applySub(gameId, inId, outId, byId, team);
+        addPlayerToSlot(gameId, inId, slotId, byId);
       });
     },
+  });
+}
+
+// Puts a bench player straight onto the field in the exact slot that was
+// tapped — no outgoing player, so none of applySub's swap bookkeeping
+// (min-stint check, squad-rule check, freeing an outgoing slot) applies,
+// just the same "add" logging the existing "⬆ Add to Pitch" button uses.
+function addPlayerToSlot(gameId, inId, slotId, byId) {
+  const game = findGame(gameId);
+  const ineligible = ineligibleToBringOnReason(game, inId);
+  if (ineligible) {
+    alertDialog(ineligible);
+    return;
+  }
+  const inName = byId[inId]?.name || '';
+  update((state) => {
+    const g = state.games.find((x) => x.id === gameId);
+    g.live.onField.push(inId);
+    g.live.stintStart = g.live.stintStart || {};
+    g.live.stintStart[inId] = g.live.elapsedSeconds;
+    g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'add', inId, inName });
+    if (g.lineup?.slots) g.lineup.slots[slotId] = inId;
   });
 }
 
@@ -484,8 +676,34 @@ function stintSeconds(live, playerId) {
   return Math.max(0, live.elapsedSeconds - startedAt);
 }
 
+// Guards every path that puts a player onto live.onField against doing so
+// twice — most notably a Substitution Plan entry (or, less often, a
+// fair-play "Use Suggestion" button) that's gone stale by the time it's
+// actually acted on: the "coming on" player may since have been made
+// goalkeeper, already brought on some other way, or sent off. Returns a
+// human-readable reason if they're not eligible right now, or null if
+// they're clear to come on.
+function ineligibleToBringOnReason(game, playerId) {
+  const name = (getState().players.find((p) => p.id === playerId) || {}).name || 'This player';
+  if (game.live.gkByPeriod[game.live.currentPeriod] === playerId) {
+    return `${name} is currently the goalkeeper and can't also be brought on as an outfield player — change the goalkeeper first if they should move to outfield.`;
+  }
+  if (game.live.onField.includes(playerId)) {
+    return `${name} is already on the field.`;
+  }
+  if ((game.live.sentOff || []).includes(playerId)) {
+    return `${name} has been sent off and can't be brought back on.`;
+  }
+  return null;
+}
+
 async function applySub(gameId, inId, outId, byId, team) {
   const game = findGame(gameId);
+  const ineligible = ineligibleToBringOnReason(game, inId);
+  if (ineligible) {
+    alertDialog(ineligible);
+    return;
+  }
   const minStintSeconds = (team.minStintMinutes ?? 4) * 60;
   const outStint = stintSeconds(game.live, outId);
   if (minStintSeconds > 0 && outStint < minStintSeconds) {
@@ -537,11 +755,94 @@ function goalkeeperCardHtml(team, numPeriods, live, currentGk, isCompleted) {
           ${currentGk && !isCompleted ? `<div class="muted small">Stint: ${formatClock(stint)}</div>` : ''}
         </div>
         <div class="row">
-          ${!isCompleted && currentGk ? `<button class="btn danger sm" data-action="log-card" data-player-id="${currentGk.id}">${team.enableCards ? 'Card' : 'Remove'}</button>` : ''}
+          ${!isCompleted && currentGk ? `<button type="button" class="icon-btn" data-action="log-card" data-player-id="${currentGk.id}" aria-label="${team.enableCards ? 'Card / remove' : 'Remove from match'} ${escapeHtml(currentGk.name)}" title="${team.enableCards ? 'Card / Remove' : 'Remove from Match'}">⋯</button>` : ''}
           ${!isCompleted ? `<button class="btn sm ${currentGk ? 'ghost' : ''}" data-action="${currentGk ? 'change-gk' : 'assign-gk'}">${currentGk ? 'Change' : 'Assign'}</button>` : ''}
         </div>
       </div>
       ${periods.length > 1 ? `<div class="muted small" style="margin-top:8px;">${periods.map((n) => `${periodLabel(numPeriods, n)}: ${live.gkByPeriod[n] ? escapeHtml((getState().players.find((p) => p.id === live.gkByPeriod[n]) || {}).name || '?') : '—'}`).join(' · ')}</div>` : ''}
+    </div>
+  `;
+}
+
+// Distills the raw chronological subLog into the handful of numbers a
+// coach actually wants after a match — who scored, who set them up, who
+// made saves, who picked up cards — rather than making them read back
+// through every event in order.
+function computeMatchSummary(live) {
+  const scorers = new Map();
+  const saves = new Map();
+  const cards = new Map();
+  let openPlaySaves = 0;
+
+  (live.subLog || []).forEach((e) => {
+    if (e.type === 'goal-us' && e.scorerId) {
+      const rec = scorers.get(e.scorerId) || { name: e.scorerName, goals: 0, assists: 0 };
+      rec.goals += 1;
+      scorers.set(e.scorerId, rec);
+      if (e.assistId) {
+        const arec = scorers.get(e.assistId) || { name: e.assistName, goals: 0, assists: 0 };
+        arec.assists += 1;
+        scorers.set(e.assistId, arec);
+      }
+    } else if (e.type === 'save') {
+      if (e.playerId) {
+        const rec = saves.get(e.playerId) || { name: e.name, count: 0 };
+        rec.count += 1;
+        saves.set(e.playerId, rec);
+      } else {
+        openPlaySaves += 1;
+      }
+    } else if (e.type === 'card') {
+      const rec = cards.get(e.playerId) || { name: e.name, yellow: 0, red: 0 };
+      if (e.cardType === 'red') rec.red += 1; else rec.yellow += 1;
+      cards.set(e.playerId, rec);
+    }
+  });
+
+  return {
+    scorers: [...scorers.values()].filter((r) => r.goals || r.assists).sort((a, b) => b.goals - a.goals),
+    saves: [...saves.values()].sort((a, b) => b.count - a.count),
+    openPlaySaves,
+    cards: [...cards.values()],
+  };
+}
+
+function matchSummaryHtml(live) {
+  const s = computeMatchSummary(live);
+  const hasAnything = s.scorers.length || s.saves.length || s.openPlaySaves || s.cards.length;
+  if (!hasAnything) return '';
+
+  return `
+    <div class="section-title" style="margin-top:0;">Match Summary</div>
+    <div class="card stack">
+      ${s.scorers.length ? `
+        <div>
+          <div class="muted small" style="margin-bottom:4px;">⚽ Scorers</div>
+          ${s.scorers.map((r) => `
+            <div class="card-row">
+              <span class="small">${escapeHtml(r.name)}</span>
+              <span class="small muted">${r.goals ? `${r.goals} goal${r.goals > 1 ? 's' : ''}` : ''}${r.goals && r.assists ? ' · ' : ''}${r.assists ? `${r.assists} assist${r.assists > 1 ? 's' : ''}` : ''}</span>
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
+      ${(s.saves.length || s.openPlaySaves) ? `
+        <div>
+          <div class="muted small" style="margin-bottom:4px;">🧤 Saves</div>
+          ${s.saves.map((r) => `
+            <div class="card-row"><span class="small">${escapeHtml(r.name)}</span><span class="small muted">${r.count}</span></div>
+          `).join('')}
+          ${s.openPlaySaves ? `<div class="card-row"><span class="small muted">Open play</span><span class="small muted">${s.openPlaySaves}</span></div>` : ''}
+        </div>
+      ` : ''}
+      ${s.cards.length ? `
+        <div>
+          <div class="muted small" style="margin-bottom:4px;">🟨 Cards</div>
+          ${s.cards.map((c) => `
+            <div class="card-row"><span class="small">${escapeHtml(c.name)}</span><span class="small">${'🟨'.repeat(c.yellow)}${'🟥'.repeat(c.red)}</span></div>
+          `).join('')}
+        </div>
+      ` : ''}
     </div>
   `;
 }
@@ -638,10 +939,14 @@ function fieldCardHtml(p, live, isCompleted, isOnField, team, positionRole) {
   const stintLine = isOnField
     ? `<div class="pt">${stint < minStintSeconds ? '🔒' : ''} Stint: ${formatClock(stint)}</div>`
     : '';
-  const cardAction = `<button type="button" class="btn danger sm" style="margin-top:6px;" data-action="log-card" data-player-id="${p.id}">${team?.enableCards ? 'Card / Remove' : 'Remove from Match'}</button>`;
+  // Tucked into a small, muted corner icon rather than a full-width red
+  // button — it still opens the same Card/Remove dialog, but doesn't sit
+  // directly under the name where a coach tapping the card to confirm a
+  // substitution could easily catch it by mistake.
+  const cardAction = `<button type="button" class="icon-btn" style="position:absolute; top:2px; right:2px; font-size:13px; padding:4px 6px;" data-action="log-card" data-player-id="${p.id}" aria-label="${team?.enableCards ? 'Card / remove' : 'Remove from match'} ${escapeHtml(p.name)}" title="${team?.enableCards ? 'Card / Remove' : 'Remove from Match'}">⋯</button>`;
   return `
-    <div class="field-card ${clickable ? 'subbing' : ''}" ${clickable ? `data-onfield-player="${p.id}" style="cursor:pointer;"` : ''}>
-      <div class="row spread">
+    <div class="field-card ${clickable ? 'subbing' : ''}" style="position:relative;" ${clickable ? `data-onfield-player="${p.id}"` : ''}>
+      <div class="row spread" style="padding-right:20px;">
         <span class="jersey" style="width:26px;height:26px;font-size:12px;">${p.jerseyNumber ?? '-'}</span>
         <span class="small muted">${positionRole ? escapeHtml(positionRole) : (isOnField ? 'On field' : 'Bench')}</span>
       </div>
@@ -694,6 +999,7 @@ function playingTimeRows(active, live, presentIds) {
 const EVENT_ICONS = {
   'goal-us': '⚽', 'goal-them': '🥅', save: '🧤', sub: '🔄', add: '⬆️',
   'send-off': '🟥', 'period-start': '⏱', 'gk-change': '🧤', recovered: '↩️',
+  'position-swap': '🔃',
 };
 
 function eventRowHtml(entry, numPeriods) {
@@ -731,6 +1037,9 @@ function eventRowHtml(entry, numPeriods) {
       break;
     case 'gk-change':
       label = `Goalkeeper: ${escapeHtml(entry.inName)} on${entry.outName ? `, ${escapeHtml(entry.outName)} off` : ''} (${periodLabel(numPeriods, entry.period)})`;
+      break;
+    case 'position-swap':
+      label = `Swapped positions: ${escapeHtml(entry.aName)} ↔ ${escapeHtml(entry.bName)}`;
       break;
     default:
       label = entry.type;
@@ -800,59 +1109,8 @@ function openGoalModal(gameId, pool) {
   });
 }
 
-function openSaveModal(gameId, pool, currentGkId, elapsedSeconds) {
-  openModal({
-    title: 'GK Save',
-    bodyHtml: `
-      <form id="save-form" class="stack">
-        <div class="field">
-          <label>Who made the save?</label>
-          <select name="player">
-            <option value="">Open play (no specific player)</option>
-            ${pool.map((p) => `<option value="${p.id}" ${p.id === currentGkId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
-          </select>
-        </div>
-        <div class="field">
-          <label>Minute (optional — blank uses the clock)</label>
-          <input type="number" name="minute" min="0" placeholder="${Math.floor(elapsedSeconds / 60)}" />
-        </div>
-        <button type="submit" class="btn block">Log Save</button>
-      </form>
-    `,
-    onMount: (modalEl) => {
-      modalEl.querySelector('#save-form').addEventListener('submit', (e) => {
-        e.preventDefault();
-        const fd = new FormData(e.target);
-        const playerId = fd.get('player') || null;
-        const player = playerId ? pool.find((p) => p.id === playerId) : null;
-        const minuteOverride = fd.get('minute') ? Number(fd.get('minute')) * 60 : null;
-        update((state) => {
-          const g = state.games.find((x) => x.id === gameId);
-          g.live.subLog.push({
-            atSeconds: minuteOverride ?? g.live.elapsedSeconds, type: 'save',
-            playerId, name: player?.name || '',
-          });
-        });
-        closeModal();
-      });
-    },
-  });
-}
-
-// Covers both "Card / Remove" (cards enabled — yellow/red/injury/other,
-// all four unambiguous about whether the player stays on or is done for
-// the match) and "Remove from Match" (cards disabled — just injury/other,
-// no card bookkeeping). Either way, anything other than a first yellow
-// takes the player out of play the same way: off the pitch, cleared from
-// any goalkeeper slot, and dropped into sentOff so they can never be
-// picked again as a sub for the rest of this match.
-function openRemovalModal(gameId, player, enableCards) {
-  if (!player) return;
-  const game = findGame(gameId);
-  const priorYellows = (game.live.subLog || []).filter(
-    (e) => e.type === 'card' && e.cardType === 'yellow' && e.playerId === player.id
-  ).length;
-  const options = enableCards
+function removalKindOptions(enableCards) {
+  return enableCards
     ? [
         { value: 'yellow', label: '🟨 Yellow card (stays on)' },
         { value: 'red', label: '🟥 Red card (sent off)' },
@@ -863,6 +1121,55 @@ function openRemovalModal(gameId, player, enableCards) {
         { value: 'injury', label: '🚑 Injury (sent off)' },
         { value: 'other', label: 'Other reason (sent off)' },
       ];
+}
+
+// Logs the actual card/removal outcome and, on a second yellow, applies the
+// automatic send-off — shared by the per-player "⋯" removal modal and the
+// quick "Card" picker (openQuickCardModal) so both enforce the exact same
+// rule: anything other than a first yellow takes the player out of play,
+// off the pitch, cleared from any goalkeeper slot, and dropped into
+// sentOff so they can never be picked again as a sub for the rest of this
+// match. A second yellow is a send-off by the laws of the game, not a
+// coach's call, so it's applied automatically rather than making them
+// separately notice and pick Red/Other themselves.
+function applyCardOutcome(gameId, player, kind) {
+  const game = findGame(gameId);
+  const priorYellows = (game.live.subLog || []).filter(
+    (e) => e.type === 'card' && e.cardType === 'yellow' && e.playerId === player.id
+  ).length;
+  let secondYellow = false;
+  update((state) => {
+    const g = state.games.find((x) => x.id === gameId);
+    if (kind === 'yellow') {
+      g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'card', cardType: 'yellow', playerId: player.id, name: player.name });
+      if (priorYellows >= 1) {
+        secondYellow = true;
+        removePlayerFromPlay(state, gameId, player.id);
+        g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'send-off', playerId: player.id, name: player.name, reason: 'second yellow' });
+      }
+      return;
+    }
+    removePlayerFromPlay(state, gameId, player.id);
+    if (kind === 'red') {
+      g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'card', cardType: 'red', playerId: player.id, name: player.name });
+    } else {
+      g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'send-off', playerId: player.id, name: player.name, reason: kind === 'injury' ? 'injury' : 'other' });
+    }
+  });
+  if (secondYellow) alertDialog(`${player.name} picked up a second yellow card — automatically sent off and excluded from further substitutions.`);
+}
+
+// Covers both "Card / Remove" (cards enabled — yellow/red/injury/other,
+// all four unambiguous about whether the player stays on or is done for
+// the match) and "Remove from Match" (cards disabled — just injury/other,
+// no card bookkeeping).
+function openRemovalModal(gameId, player, enableCards) {
+  if (!player) return;
+  const game = findGame(gameId);
+  const priorYellows = (game.live.subLog || []).filter(
+    (e) => e.type === 'card' && e.cardType === 'yellow' && e.playerId === player.id
+  ).length;
+  const options = removalKindOptions(enableCards);
 
   openModal({
     title: `${enableCards ? 'Card / Remove' : 'Remove from Match'} — ${escapeHtml(player.name)}`,
@@ -871,7 +1178,7 @@ function openRemovalModal(gameId, player, enableCards) {
         <div class="field">
           <label>What happened?</label>
           <select name="kind">
-            ${options.map((o) => `<option value="${o.value}">${escapeHtml(o.label)}</option>`).join('')}
+            ${options.map((o, i) => `<option value="${o.value}" ${i === 0 ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
           </select>
         </div>
         ${enableCards && priorYellows >= 1 ? `<p class="muted small" style="margin:0;">Already has a yellow card this match — picking Yellow again will automatically send them off.</p>` : ''}
@@ -882,30 +1189,58 @@ function openRemovalModal(gameId, player, enableCards) {
       modalEl.querySelector('#card-form').addEventListener('submit', (e) => {
         e.preventDefault();
         const kind = new FormData(e.target).get('kind');
-        let secondYellow = false;
-        update((state) => {
-          const g = state.games.find((x) => x.id === gameId);
-          if (kind === 'yellow') {
-            g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'card', cardType: 'yellow', playerId: player.id, name: player.name });
-            if (priorYellows >= 1) {
-              // A second yellow is a send-off by the laws of the game, not
-              // a coach's call — apply it automatically rather than making
-              // them separately notice and pick Red/Other themselves.
-              secondYellow = true;
-              removePlayerFromPlay(state, gameId, player.id);
-              g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'send-off', playerId: player.id, name: player.name, reason: 'second yellow' });
-            }
-            return;
-          }
-          removePlayerFromPlay(state, gameId, player.id);
-          if (kind === 'red') {
-            g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'card', cardType: 'red', playerId: player.id, name: player.name });
-          } else {
-            g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'send-off', playerId: player.id, name: player.name, reason: kind === 'injury' ? 'injury' : 'other' });
-          }
-        });
         closeModal();
-        if (secondYellow) alertDialog(`${player.name} picked up a second yellow card — automatically sent off and excluded from further substitutions.`);
+        applyCardOutcome(gameId, player, kind);
+      });
+    },
+  });
+}
+
+// Quick way to log a card/removal without hunting for the player's own
+// "⋯" icon on their card — a single form with a player picker (same
+// simple <select> pattern as the Goalkeeper modal) plus the same
+// "What happened?" choice, defaulting to Yellow. Only on-field outfield
+// players and the current goalkeeper are eligible, same pool as the
+// Log Goal modal — a card only applies to someone actually playing right
+// now.
+function openQuickCardModal(gameId, pool, team) {
+  if (!pool.length) {
+    alertDialog('No one is on the pitch yet to card or remove.');
+    return;
+  }
+  const enableCards = team.enableCards;
+  const options = removalKindOptions(enableCards);
+
+  openModal({
+    title: enableCards ? 'Card / Remove' : 'Remove from Match',
+    bodyHtml: `
+      <form id="quick-card-form" class="stack">
+        <div class="field">
+          <label>Player</label>
+          <select name="playerId" required>
+            <option value="" disabled selected>Select player</option>
+            ${pool.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>What happened?</label>
+          <select name="kind">
+            ${options.map((o, i) => `<option value="${o.value}" ${i === 0 ? 'selected' : ''}>${escapeHtml(o.label)}</option>`).join('')}
+          </select>
+        </div>
+        <button type="submit" class="btn block">${enableCards ? 'Log' : 'Remove'}</button>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      modalEl.querySelector('#quick-card-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const fd = new FormData(e.target);
+        const playerId = fd.get('playerId');
+        if (!playerId) return;
+        const player = pool.find((p) => p.id === playerId);
+        if (!player) return;
+        closeModal();
+        applyCardOutcome(gameId, player, fd.get('kind'));
       });
     },
   });
@@ -1022,6 +1357,8 @@ function openGkModal(gameId, active, presentIds, sentOffIds, targetPeriod, advan
 
           if (advancePeriod) {
             g.live.currentPeriod = targetPeriod;
+            g.live.periodStartElapsed = g.live.periodStartElapsed || {};
+            g.live.periodStartElapsed[targetPeriod] = g.live.elapsedSeconds;
             g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'period-start', period: targetPeriod });
           }
           if (newGkId !== prevGkId) {
@@ -1041,7 +1378,17 @@ function openGkModal(gameId, active, presentIds, sentOffIds, targetPeriod, advan
           // without this the live pitch's display fallback (currentGk)
           // would be right but the underlying slot data would silently
           // drift from it.
-          if (g.lineup?.slots) g.lineup.slots.gk = g.live.gkByPeriod[g.live.currentPeriod] || null;
+          if (g.lineup?.slots) {
+            // The new keeper may still be holding an outfield slot from
+            // before (e.g. they were playing defense) — clear it, otherwise
+            // the pitch renders them twice: once in goal, once in their old
+            // outfield spot, looking like a duplicate player with the same
+            // name.
+            Object.keys(g.lineup.slots).forEach((sid) => {
+              if (sid !== 'gk' && g.lineup.slots[sid] === newGkId) g.lineup.slots[sid] = null;
+            });
+            g.lineup.slots.gk = g.live.gkByPeriod[g.live.currentPeriod] || null;
+          }
         });
         closeModal();
       });
