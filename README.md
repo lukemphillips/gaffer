@@ -336,7 +336,13 @@ see everything working immediately. Reset or clear that data any time from
 - **Live game day**:
   - A match clock that keeps running in real time no matter what screen
     you're on — step away to the Squad tab, Roster, wherever, and it's
-    still accurate when you come back.
+    still accurate when you come back. It's anchored to an actual
+    timestamp rather than counting ticks, so locking the phone or
+    backgrounding the tab (both of which mobile browsers throttle or
+    fully suspend) doesn't lose that stretch of time — the clock (and
+    playing time) catches straight up to the real elapsed time the
+    moment anything touches the app again, instead of quietly falling
+    behind while the screen was off.
   - The big clock display always shows time elapsed in the **current
     half/period only**, resetting to 0:00 the moment a new period starts
     — so the 2nd half's clock can't look like it's carrying on from
@@ -368,12 +374,20 @@ see everything working immediately. Reset or clear that data any time from
     outgoing player needed. The goalkeeper spot — filled or empty — always
     opens the dedicated Change/Assign Goalkeeper dialog instead of the
     normal substitute/fill flow, since that's the only place a keeper's
-    stint tracking and gk-change logging are set up correctly. The
-    **Formation** dropdown also works mid-match: switching shapes remaps
-    everyone's position onto the new layout without touching who's
-    actually on the field, and any on-field player whose old slot id
-    doesn't exist in the new formation is placed into whatever slot is
-    left over rather than being left without a visible position.
+    stint tracking and gk-change logging are set up correctly. A
+    **Formation** button above the pitch also works mid-match: it opens a
+    picker (a real pop-up, not an inline `<select>` sitting in the part
+    of the page that re-renders every second while the clock runs — that
+    inline version used to have the dropdown snap shut on you mid-tap) —
+    switching shapes remaps everyone's position onto the new layout
+    without touching who's actually on the field, and any on-field player
+    whose old slot id doesn't exist in the new formation is placed into
+    whatever slot is left over rather than being left without a visible
+    position. Next to it, **⚡ Auto-Fill Field** fills any spare pitch
+    spot (goalkeeper included) with present players in one tap, using the
+    same position-matched assignment as the pre-match Lineup tab's own
+    Auto-Fill — for starting the match straight off marking the squad
+    present and skipping the Lineup tab step entirely.
   - Minimum-stint protection (default 4 min, adjustable in Settings) — subbing
     a player off before they've had a fair block of time on the pitch shows
     a warning naming them and how long they've actually played; you can
