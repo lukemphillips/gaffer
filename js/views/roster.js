@@ -1,18 +1,65 @@
 import { getState, update, findPlayer } from '../store.js';
-import { uid, escapeHtml, streamBadgeHtml, playerPositions, formatPositions, copyToClipboard } from '../util.js';
+import { uid, escapeHtml, streamBadgeHtml, playerPositions, formatPositions, copyToClipboard, comparePlayersBy, usedTeamAllocationsInOrder } from '../util.js';
 import { openModal, closeModal, confirmDialog, alertDialog } from '../modal.js';
 import { parseRosterFile, TEMPLATE_CSV } from '../importRoster.js';
+import { isMatchdayOnly } from '../cloudSync.js';
+
+// A Matchday-access device's roster edits are rejected by Cloud Sync's
+// Apps Script regardless of what this app sends (see cloudSync.js), so
+// opening the edit form here would just look like it worked and then
+// quietly get overwritten on the next sync — better to explain up front.
+function blockIfMatchdayOnly() {
+  if (!isMatchdayOnly()) return false;
+  alertDialog("The roster can only be changed from a Full Edit device — ask whoever set up Cloud Sync for that link if a player needs adding or editing.");
+  return true;
+}
 
 const POSITIONS = ['GK', 'DEF', 'MID', 'FWD'];
 const STREAMS = ['A', 'B', 'C', 'D'];
+const ROSTER_SORTS = [
+  { key: 'name', label: 'Name' },
+  { key: 'stream', label: 'Stream' },
+  { key: 'teamAllocation', label: 'Team Allocation' },
+];
+
+// null = the original default order (active first, then guests, then by
+// jersey number) — same as before this sorting existed. Picking one of the
+// columns below (same keys/behavior as Balance Teams' Squad table) sorts
+// the whole roster by that instead, active/inactive/guest mixed together.
+let rosterSortKey = null;
+let rosterSortDir = 'asc';
+
+// A single team-allocation value to show exclusively, or null for
+// everyone — for clubs running one big squad across several named teams
+// (e.g. "9.4", "9.5"), so a coach can pull up just their own sub-team.
+let rosterTeamAllocFilter = null;
+
+function sortRosterPlayers(players) {
+  if (!rosterSortKey) {
+    return [...players].sort((a, b) => {
+      if (a.active !== b.active) return a.active ? -1 : 1;
+      if (!!a.isGuest !== !!b.isGuest) return a.isGuest ? 1 : -1;
+      return (a.jerseyNumber ?? 0) - (b.jerseyNumber ?? 0);
+    });
+  }
+  const sorted = [...players];
+  sorted.sort((a, b) => {
+    const cmp = comparePlayersBy(rosterSortKey, a, b);
+    return rosterSortDir === 'desc' ? -cmp : cmp;
+  });
+  return sorted;
+}
 
 export function renderRoster(app) {
   const { players } = getState();
-  const sorted = [...players].sort((a, b) => {
-    if (a.active !== b.active) return a.active ? -1 : 1;
-    if (!!a.isGuest !== !!b.isGuest) return a.isGuest ? 1 : -1;
-    return (a.jerseyNumber ?? 0) - (b.jerseyNumber ?? 0);
-  });
+  const teamAllocValues = usedTeamAllocationsInOrder(players);
+  // Drop a filter that no longer matches anyone (e.g. the last player with
+  // that value was reassigned) instead of silently showing an empty list.
+  if (rosterTeamAllocFilter && !teamAllocValues.includes(rosterTeamAllocFilter)) rosterTeamAllocFilter = null;
+  const filtered = rosterTeamAllocFilter
+    ? players.filter((p) => p.teamAllocation === rosterTeamAllocFilter)
+    : players;
+  const sorted = sortRosterPlayers(filtered);
 
   app.innerHTML = `
     <div class="page-title">
@@ -26,16 +73,55 @@ export function renderRoster(app) {
         <button class="btn" data-action="add-player">+ Add</button>
       </div>
     </div>
+    <div class="spread" style="margin:0 0 10px; flex-wrap:wrap; gap:8px 16px; align-items:center;">
+      <div class="muted small">Sort by:</div>
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        ${ROSTER_SORTS.map((s) => `
+          <button type="button" class="btn ${rosterSortKey === s.key ? 'secondary' : 'ghost'} sm" data-roster-sort="${s.key}">
+            ${s.label}${rosterSortKey === s.key ? (rosterSortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+          </button>
+        `).join('')}
+      </div>
+    </div>
+    ${teamAllocValues.length ? `
+      <div class="muted small" style="margin-bottom:4px;">Team allocation</div>
+      <div class="chip-list" style="margin-bottom:12px;">
+        ${teamAllocValues.map((v) => `<button type="button" class="bench-chip ${rosterTeamAllocFilter === v ? 'picking' : ''}" data-team-alloc-filter="${escapeHtml(v)}">${escapeHtml(v)}</button>`).join('')}
+        ${rosterTeamAllocFilter ? '<button type="button" class="bench-chip" data-action="clear-team-alloc-filter">✕ Clear</button>' : ''}
+      </div>
+    ` : ''}
     <div class="card">
-      ${sorted.length ? sorted.map(playerRow).join('') : '<div class="empty">No players yet. Add your first player.</div>'}
+      ${sorted.length ? sorted.map(playerRow).join('') : `<div class="empty">${rosterTeamAllocFilter ? 'No players with this team allocation.' : 'No players yet. Add your first player.'}</div>`}
     </div>
   `;
 
-  app.querySelector('[data-action="add-player"]').addEventListener('click', () => openPlayerForm());
-  app.querySelector('[data-action="import-roster"]').addEventListener('click', () => openImportModal());
+  app.querySelector('[data-action="add-player"]').addEventListener('click', () => { if (!blockIfMatchdayOnly()) openPlayerForm(); });
+  app.querySelector('[data-action="import-roster"]').addEventListener('click', () => { if (!blockIfMatchdayOnly()) openImportModal(); });
   app.querySelectorAll('[data-action="edit-player"]').forEach((el) => {
-    el.addEventListener('click', () => openPlayerForm(el.dataset.id));
+    el.addEventListener('click', () => { if (!blockIfMatchdayOnly()) openPlayerForm(el.dataset.id); });
   });
+  app.querySelectorAll('[data-roster-sort]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const key = btn.dataset.rosterSort;
+      if (rosterSortKey === key) rosterSortDir = rosterSortDir === 'desc' ? 'asc' : 'desc';
+      else { rosterSortKey = key; rosterSortDir = 'asc'; }
+      renderRoster(app);
+    });
+  });
+  app.querySelectorAll('[data-team-alloc-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const value = btn.dataset.teamAllocFilter;
+      rosterTeamAllocFilter = rosterTeamAllocFilter === value ? null : value;
+      renderRoster(app);
+    });
+  });
+  const clearFilterBtn = app.querySelector('[data-action="clear-team-alloc-filter"]');
+  if (clearFilterBtn) {
+    clearFilterBtn.addEventListener('click', () => {
+      rosterTeamAllocFilter = null;
+      renderRoster(app);
+    });
+  }
 }
 
 function playerRow(p) {
@@ -48,6 +134,7 @@ function playerRow(p) {
         ${p.notes ? `<div class="muted small" style="margin-top:2px;">📝 ${escapeHtml(p.notes)}</div>` : ''}
       </div>
       ${streamBadgeHtml(p.skillStream)}
+      ${p.teamAllocation ? `<span class="badge team-alloc">${escapeHtml(p.teamAllocation)}</span>` : ''}
       ${p.isGuest ? `<span class="badge scheduled">👥 Guest${p.guestTeamName ? ` (${escapeHtml(p.guestTeamName)})` : ''}</span>` : ''}
       ${p.active ? '' : '<span class="badge pending">inactive</span>'}
     </div>
@@ -56,7 +143,7 @@ function playerRow(p) {
 
 function openPlayerForm(playerId) {
   const existing = playerId ? findPlayer(playerId) : null;
-  const p = existing || { name: '', jerseyNumber: '', positions: [], skillStream: '', guardianName: '', guardianPhone: '', notes: '', active: true, isGuest: false, guestTeamName: '' };
+  const p = existing || { name: '', jerseyNumber: '', positions: [], skillStream: '', teamAllocation: '', guardianName: '', guardianPhone: '', notes: '', active: true, isGuest: false, guestTeamName: '' };
   const currentPositions = playerPositions(p);
 
   const dlg = openModal({
@@ -88,6 +175,11 @@ function openPlayerForm(playerId) {
             <option value="" ${!p.skillStream ? 'selected' : ''}>Unclassified</option>
             ${STREAMS.map((s) => `<option value="${s}" ${p.skillStream === s ? 'selected' : ''}>Stream ${s}</option>`).join('')}
           </select>
+        </div>
+        <div class="field">
+          <label>Team allocation</label>
+          <input type="text" name="teamAllocation" value="${escapeHtml(p.teamAllocation || '')}" placeholder="e.g. 9.4" style="max-width:160px;" />
+          <div class="muted small" style="margin-top:4px;">Which of your club's teams this player is actually rostered to — for clubs running one big squad across several named teams (e.g. 9.4, 9.5). Separate from Balance Teams' random daily split.</div>
         </div>
         <div class="field">
           <label>Guardian name</label>
@@ -137,6 +229,7 @@ function openPlayerForm(playerId) {
           jerseyNumber: fd.get('jerseyNumber') ? Number(fd.get('jerseyNumber')) : null,
           positions: fd.getAll('positions'),
           skillStream: fd.get('skillStream') || null,
+          teamAllocation: (fd.get('teamAllocation') || '').trim(),
           guardianName: (fd.get('guardianName') || '').trim(),
           guardianPhone: (fd.get('guardianPhone') || '').trim(),
           notes: (fd.get('notes') || '').trim(),

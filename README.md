@@ -37,7 +37,14 @@ see everything working immediately. Reset or clear that data any time from
   anything worth remembering that doesn't fit another field; shows as a
   📝 preview line on the roster row when set), active/inactive status,
   and a streaming classification (A/B/C/D) you assign per player to keep
-  team-building fair. **Import** lets you bulk-add
+  team-building fair. A separate **team allocation** field (free text, e.g.
+  "9.4") records which of your club's actual named teams a player is
+  rostered to, for clubs running one big squad across several teams —
+  shown as a badge on the roster row, and sortable in Balance Teams'
+  Squad table. The roster list itself has the same **Sort by** buttons
+  (Name / Stream / Team Allocation, tap again to reverse) above the player
+  list; leave them alone and it falls back to the original order (active
+  players first, then guests, then by jersey number). **Import** lets you bulk-add
   players from a .csv or .xlsx file instead of typing each one in — the
   first row should be headers, and common variants (Name/Player, Jersey/
   Number/#, Position/Pos, Stream/Group/Classification, Guardian/Parent,
@@ -59,22 +66,37 @@ see everything working immediately. Reset or clear that data any time from
   visiting team's roster in as guests in one go, instead of adding each
   one by hand and flipping the Guest switch every time.
 - **Balance Teams** — pick who's involved (defaults to the whole active
-  roster), then randomly split them into 2–4 teams. The split balances each
-  streaming classification separately (so it's not just an even head count
-  but an even mix of A/B/C/D across every team), and "Shuffle Again" re-rolls
-  without losing your squad selection. For junior squads (U9 and under),
-  where DDSL/FAI mini-soccer is 4v4/5v5, it nudges you toward splitting into
-  several small teams for parallel games rather than one team with subs.
-  Launching it from a game's RSVP or Squad tab ("🎲 Balance Teams from
-  RSVPs" / "…from today's squad") starts you off with just that game's
-  confirmed players instead of the whole roster — untick anyone before you
-  split. Once split, "Copy to Share" copies a plain-text team list you can
-  paste into a text/WhatsApp message to other coaches, and on phones that
-  support it there's also a native "Text / Share…" button that opens the
-  share sheet directly. Not happy with the random result? Tap a player on
-  one team, then tap "Move here →" on another team to move them across by
-  hand — the same tap-to-select pattern used for Training groups — without
-  needing to reshuffle everyone.
+  roster), then randomly split them into 2–4 teams. **Balance by** chooses
+  the split algorithm: **Mixed ability** spreads each streaming
+  classification evenly across every team (so it's not just an even head
+  count but an even mix of A/B/C/D — the default, for one fair, competitive
+  split), while **Same stream** clusters similar-ability players onto the
+  same team instead, for running side-by-side matches at different
+  intensities (team sizes still come out balanced either way). "Shuffle
+  Again" re-rolls without losing your squad selection or mode. For junior
+  squads (U9 and under), where DDSL/FAI mini-soccer is 4v4/5v5, it nudges
+  you toward splitting into several small teams for parallel games rather
+  than one team with subs. Launching it from a game's RSVP or Squad tab
+  ("🎲 Balance Teams from RSVPs" / "…from today's squad") starts you off
+  with just that game's confirmed players instead of the whole roster —
+  untick anyone before you split. The Squad list itself is a sortable table
+  (tap Name, Stream, or Team Allocation to reorder it) with a Team column
+  that fills in once you've split, showing each player's team as a
+  dropdown; if any players have a Team Allocation set, a row of chips above
+  the table lets you filter the list down to just one sub-team (this only
+  narrows what's shown — it never changes who's ticked for the split).
+  Team Allocation is a separate, free-text label (e.g. "9.4", "9.5", sorted
+  numeric-aware so "9.4" comes before "10.1") for clubs running one big
+  roster across several actually-named teams — it's not part of the random
+  split at all, and it's editable right in this table (or from a player's
+  Add/Edit form on the Roster) so it sticks around across every future
+  visit to this page. Once split, "Copy to Share"
+  copies a plain-text team list you can paste into a text/WhatsApp message
+  to other coaches, and on phones that support it there's also a native
+  "Text / Share…" button that opens the share sheet directly. Not happy
+  with the random result? Move a player between teams by hand from either
+  their Team dropdown in the Squad table, or the matching dropdown next to
+  their name in their team card below — no need to reshuffle everyone.
   "Send to a scheduled match" turns a selection (or one of the split teams)
   into the real thing in one tap: pick a scheduled match from the dropdown,
   hit "→ Set as Match Squad", and it sets who's present for that game and
@@ -550,12 +572,7 @@ see everything working immediately. Reset or clear that data any time from
   own when scheduled), minimum stint length, a **minimum playing time
   standard** (% of match minutes every player should get at minimum, over
   the season — surfaced in Stats' PT% column, see above), the
-  equal-playing-time toggle, cards toggle, squad rules, and a collapsible
-  age-group format guide (see below) with a one-tap "Suggest format &
-  playing-time standard" button that reads your age group and fills in
-  the squad format, match length, *and* the minimum playing time standard
-  for you — the guide table's own "Min Play%" column shows what each band
-  gets. Changing squad format (e.g.
+  equal-playing-time toggle, cards toggle, and squad rules. Changing squad format (e.g.
   7-a-side to 5-a-side) reshapes every upcoming lineup to fit — spots the
   new formation still has keep their player, anyone whose spot no longer
   exists just moves to the bench, so nobody's silently dropped and nothing
@@ -580,33 +597,22 @@ see everything working immediately. Reset or clear that data any time from
   a big change, and any time you're not sure the data will still be there
   next time you open the app.
   - **Automatic backups** — on top of the manual button, Boot Room snapshots a
-    backup by itself every time a match finishes (End Game or End & Next),
-    with no action needed. It's kept as a second, independent copy on the
+    backup by itself whenever a match finishes (End Game or End & Next), a
+    training session is saved (created/edited) or ended, or a drill is saved
+    (created/edited), with no action needed. It's kept as a second, independent copy on the
     same device (not sent anywhere — everything here stays local), so a bad
     edit or an accidental Clear All Data still has something to fall back
     to; the 5 most recent are listed in Settings > Data with a one-tap
     Restore each. If the app is ever opened and finds no team set up but an
     automatic backup exists on that device, the Dashboard offers to restore
-    it before you start from scratch. Where the page isn't sandboxed (a
-    normal hosted tab, not the embedded Claude Artifact viewer), it also
-    tries to save the same backup as a downloaded file for an extra, fully
-    offline copy — inside the Artifact viewer that part is silently skipped
-    (the sandbox blocks a page from starting its own downloads), so the
-    automatic on-device snapshot and the manual Backup button are what's
-    guaranteed to work there.
-  - **A single self-updating backup file** — the downloaded file above is a
-    new dated file every match, which adds up over a season. On a
-    desktop/laptop, in Chrome or Edge (this needs the File System Access
-    API), Settings also offers "Choose File Location": pick a file once
-    (e.g. `bootroom-backup.json` in Documents) and Boot Room silently overwrites
-    that same file after every match from then on, so there's always
-    exactly one current file rather than a growing pile. It's independent
-    of the dated downloads — use one, the other, both, or neither.
-    **Doesn't work on iPhone or iPad, in any browser** — Apple requires
-    every browser on iOS to use the same underlying engine (Safari's),
-    which has never implemented this API, so "Chrome" on an iPhone doesn't
-    get it either. That's a platform restriction, not a bug; the dated
-    download above is the one that works everywhere, phones included.
+    it before you start from scratch. A completed match additionally tries
+    to save the same backup as a downloaded file, for an extra, fully
+    offline copy, where the page isn't sandboxed (a normal hosted tab, not
+    the embedded Claude Artifact viewer, which blocks a page from starting
+    its own downloads) — training/drill saves only take the on-device
+    snapshot, not the download. The automatic on-device snapshot and the
+    manual Backup button are what's guaranteed to work everywhere,
+    sandboxed or not.
   - **Merging in another coach's backup** — for one team split across two
     simultaneous matches (e.g. two 5-a-side games at once, each tracked on
     a different coach's phone), Settings > Data also has "Merge in Another
@@ -624,33 +630,58 @@ see everything working immediately. Reset or clear that data any time from
     an automatic on-device backup of the combined result, same as a match
     ending would — the merged data is protected right away rather than
     waiting on the next match or a manual Backup Team Data tap.
+- **Cloud Sync** (`js/cloudSync.js`, Settings > Cloud Sync) — season-long
+  shared access across several coaches' own devices, without Boot Room
+  growing a server or account system of its own. A small Google Apps
+  Script "Web App", deployed by one coach against a blank Google Sheet,
+  stands in as the shared store; this app talks to it with plain `fetch()`
+  calls, no npm dependency added. Two access levels, each its own
+  generated link:
+  - **Full Edit** can push anything — team settings, roster, matches.
+  - **Matchday** can push match data and add brand-new players (e.g. a
+    late arrival), but nothing else — the script itself rejects any other
+    change a Matchday-token request sends, regardless of what this app
+    posts, so it's a real permission boundary, not just something the UI
+    hides. The UI additionally disables Roster and Team Settings editing
+    on a Matchday device, so a change never looks like it saved when it
+    silently wouldn't have.
+  - **Training sessions and the Drill Library are not part of Cloud Sync
+    at all** — they stay purely local to each device, exactly as they did
+    before Cloud Sync existed. `pushToCloud` never includes them, so
+    there's nothing to merge or overwrite; a coach who wants to hand
+    another coach a specific plan or drill uses that item's own
+    Share/Download option instead.
+
+  Setup is designed so the coach never invents or hand-edits anything: the
+  app generates both access tokens, builds the complete Apps Script source
+  with them already baked in (`buildAppsScript` in `cloudSync.js` — copy
+  exactly as-is, nothing to fill in), and assembles both share links once
+  the coach pastes back the one URL Google gives them after deploying. The
+  only step that can't be automated away is Google's own Deploy flow
+  (Extensions > Apps Script > Deploy > Web app), since that requires the
+  Sheet's owner to interactively authorize it — everything else is
+  generated, not typed.
+
+  Every device's own connection (which link, which role, last synced) is
+  kept in its own separate `localStorage` key, deliberately apart from the
+  synced team data itself, so a Matchday device's local storage never even
+  contains the Full Edit token. Pulling adopts the cloud's team and roster
+  wholesale (the Apps Script guarantees only a Full Edit push can have
+  changed those), keeping any player added locally but not yet pushed
+  rather than dropping it; games reconcile with the same "most complete
+  wins" comparison Merge (above) already uses, since whichever device is
+  actually running a live match may be ahead of what was last synced.
+  Training sessions and drills are untouched by any of this — see above.
+  Sync happens automatically after every match ends and
+  when the app opens, plus a manual "Sync Now" — each pulls first, then
+  pushes, so a device that's been offline a while doesn't overwrite
+  changes it never saw. It's a genuine live share of the same data, not a
+  backup — Backup/Restore and the automatic on-device snapshots above are
+  still worth keeping in case the Sheet itself is ever deleted.
 - **Help & How-To** — an in-app guide (❓ icon on the Dashboard, or the link
   at the top of Settings) covering getting started, running a live match,
   fair play, keeping data safe, and troubleshooting, so a coach doesn't
   need to read this README to use the app day-to-day.
-
-## Age-group formats (DDSL / FAI Player Development Plan)
-
-Settings includes a reference table of playing formats by age group, based
-on the FAI Player Development Plan that DDSL and most Irish schoolboy/
-schoolgirl leagues build their own rules on: 4v4 (no keeper) at U7, 5-a-side
-at U8–U9, 7-a-side at U10–U11, 9-a-side at U12, and 11-a-side from U13 up,
-each with its own match length, pitch size, and minimum playing time
-standard (the table's "Min Play%" column). The U13/U14+ figures come
-directly from the FAI's own published minimum-minutes guidance for those
-bands, converted to a percentage of that band's total match length; U7–U12
-(the FAI's development phase, where the guidance is that younger players
-need *more* guaranteed time, not less) carries the ~50% figure that's the
-common general benchmark for equal playing time at that age.
-
-Worth knowing: this session's network policy blocked direct access to
-ddsl.ie, so the table is sourced from the public FAI plan and reporting
-about DDSL rather than DDSL's own rule book (which is linked from
-[ddsl.ie](https://ddsl.ie/) if you want to check the current one directly)
-— DDSL has in the past run U11/U12 differently from the standard FAI
-format, so it's worth confirming your age group's exact rules (including
-its exact playing-time policy) with your league before relying on the
-suggestion.
 
 ## Project structure
 
@@ -663,7 +694,9 @@ js/
   seed.js          sample data
   formations.js    default formation shapes per squad size + custom-
                    formation builder (evenly-laid-out DEF/MID/FWD counts)
-  ageFormats.js    DDSL/FAI age-group format reference + suggestion logic
+  ageFormats.js    DDSL/FAI age-group reference data, used to detect
+                   junior (U7-U9) age groups for Balance Teams' default
+                   guidance
   starterDrills.js ~45 curated real drills (name/description/link/tags/
                    ageGroups, a dozen with an inline-SVG diagram) loaded
                    in one tap via the Drill Library's "📚 Load Starter

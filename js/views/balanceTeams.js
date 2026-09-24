@@ -1,32 +1,52 @@
 import { getState, update, findGame } from '../store.js';
-import { escapeHtml, streamBadgeHtml, formatPositions, copyToClipboard, formatDate, sortByDateTime, matchEligiblePlayers } from '../util.js';
+import { escapeHtml, streamBadgeHtml, formatPositions, copyToClipboard, formatDate, sortByDateTime, matchEligiblePlayers, STREAM_ORDER, comparePlayersBy, shuffleArray, usedTeamAllocationsInOrder } from '../util.js';
 import { isJuniorAgeGroup } from '../ageFormats.js';
+import { buildGroupsByStream } from '../trainingGroups.js';
 import { formationFor, emptyLineupSlots } from '../formations.js';
 import { autoFillLineup } from './gameDetail.js';
 import { confirmDialog } from '../modal.js';
 
-const STREAM_ORDER = ['A', 'B', 'C', 'D', null];
 const MIN_TEAMS = 2;
 const MAX_TEAMS = 4;
 
 let includedIds = null;
 let teamCount = 2;
+let splitMode = 'mixed';
 let split = null;
 let lastGameId = null;
 let targetGameId = null;
 let importedSquad = null;
 let importedTeams = {};
-let selectingPlayerId = null;
-let selectingSourceTeamIdx = null;
+let squadSortKey = 'name';
+let squadSortDir = 'asc';
+
+// A single team-allocation value to show exclusively in the Squad list, or
+// null for everyone — same idea and values as Roster's filter, so a coach
+// running several named sub-teams (e.g. "9.4", "9.5") can narrow down to
+// just theirs before picking who's involved. Doesn't touch `includedIds`
+// — hiding a row here doesn't change whether that player is selected.
+let squadTeamAllocFilter = null;
 
 function resetImportStatus() {
   importedSquad = null;
   importedTeams = {};
 }
 
-function resetTeamSelection() {
-  selectingPlayerId = null;
-  selectingSourceTeamIdx = null;
+function sortSquadPlayers(list) {
+  const sorted = [...list];
+  sorted.sort((a, b) => {
+    const cmp = comparePlayersBy(squadSortKey, a, b);
+    return squadSortDir === 'desc' ? -cmp : cmp;
+  });
+  return sorted;
+}
+
+// Which team (by index into `split`) a player currently sits on, or null
+// before a split exists / if they somehow aren't in any team.
+function teamIndexOf(playerId) {
+  if (!split) return null;
+  const idx = split.findIndex((team) => team.some((p) => p.id === playerId));
+  return idx === -1 ? null : idx;
 }
 
 // Coming from a specific game, default the squad to who's actually
@@ -48,15 +68,8 @@ function includedFromLabel(game, active) {
   return 'the full active roster';
 }
 
-function shuffle(list) {
-  const arr = [...list];
-  for (let i = arr.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [arr[i], arr[j]] = [arr[j], arr[i]];
-  }
-  return arr;
-}
-
+// "Mixed ability" — spreads each skill stream evenly across every team, so
+// each one gets a fair cross-section for a competitive match.
 export function splitBalancedTeams(players, count) {
   const buckets = new Map(STREAM_ORDER.map((s) => [s, []]));
   players.forEach((p) => {
@@ -66,7 +79,7 @@ export function splitBalancedTeams(players, count) {
 
   const teams = Array.from({ length: count }, () => []);
   STREAM_ORDER.forEach((key) => {
-    shuffle(buckets.get(key)).forEach((p) => {
+    shuffleArray(buckets.get(key)).forEach((p) => {
       const minLen = Math.min(...teams.map((t) => t.length));
       const smallest = teams.map((t, i) => i).filter((i) => teams[i].length === minLen);
       const idx = smallest[Math.floor(Math.random() * smallest.length)];
@@ -74,6 +87,24 @@ export function splitBalancedTeams(players, count) {
     });
   });
   return teams;
+}
+
+// "Same stream" — clusters players of similar ability onto the same team
+// instead, for running side-by-side matches at different intensities.
+// Reuses Training's grouping algorithm (balance:true keeps team sizes
+// fair, same as "Mixed ability" above) and maps its {playerIds} groups
+// back to player objects; pads with empty teams if fewer streams are
+// present than `count` asks for, so the UI always shows `count` teams.
+function splitSameStream(players, count) {
+  const byId = Object.fromEntries(players.map((p) => [p.id, p]));
+  const groups = buildGroupsByStream(shuffleArray(players), count, true);
+  const teams = groups.map((g) => g.playerIds.map((id) => byId[id]).filter(Boolean));
+  while (teams.length < count) teams.push([]);
+  return teams;
+}
+
+function splitByMode(players, count, mode) {
+  return mode === 'same' ? splitSameStream(players, count) : splitBalancedTeams(players, count);
 }
 
 function streamCounts(team) {
@@ -127,7 +158,6 @@ export function renderBalanceTeams(app, gameId) {
     includedIds = defaultIncludedIds(game, active);
     split = null;
     resetImportStatus();
-    resetTeamSelection();
     lastGameId = gameId || null;
   }
   // Drop anyone no longer active/present in the roster.
@@ -140,13 +170,19 @@ export function renderBalanceTeams(app, gameId) {
   const included = active.filter((p) => includedIds.has(p.id));
   const canSplit = included.length >= teamCount * 2;
 
+  const teamAllocValues = usedTeamAllocationsInOrder(active);
+  // Drop a filter that no longer matches anyone (e.g. the last player with
+  // that value was reassigned) instead of silently showing an empty list.
+  if (squadTeamAllocFilter && !teamAllocValues.includes(squadTeamAllocFilter)) squadTeamAllocFilter = null;
+  const squadRows = squadTeamAllocFilter ? active.filter((p) => p.teamAllocation === squadTeamAllocFilter) : active;
+
   app.innerHTML = `
     <div class="page-title">
       <div>
         <h1>Balance Teams</h1>
         <div class="sub">${game
           ? `For ${game.isHome ? 'vs' : '@'} ${escapeHtml(game.opponent)} · ${formatDate(game.date)}`
-          : 'Randomly split a squad into fair teams by streaming classification'}</div>
+          : 'Randomly split a squad into teams, balanced by skill stream'}</div>
       </div>
     </div>
 
@@ -157,8 +193,8 @@ export function renderBalanceTeams(app, gameId) {
         ? `Starting from ${includedFromLabel(game, active)} for this match — untick anyone who won't be involved before you split.`
         : ''}
       ${junior
-        ? ' Junior squads (U9 and under) often split a training group into several small teams for parallel mini-soccer games rather than one team with subs. Choose how many teams below — each streaming classification is divided as evenly as possible across all of them.'
-        : " Pick who's involved, then split. Each streaming classification is divided as evenly as possible between the teams — not just the head count."}
+        ? ' Junior squads (U9 and under) often split a training group into several small teams for parallel mini-soccer games rather than one team with subs. Choose how many teams below, and whether to balance by ability or stream.'
+        : " Pick who's involved, then split — choose how many teams and whether to balance by ability or stream below."}
     </div>
 
     <div class="section-title" style="margin-top:0;">Number of teams</div>
@@ -168,15 +204,50 @@ export function renderBalanceTeams(app, gameId) {
       `).join('')}
     </div>
 
+    <div class="section-title">Balance by</div>
+    <div class="tabs" style="max-width:320px;">
+      <div class="tab ${splitMode === 'mixed' ? 'active' : ''}" data-split-mode="mixed">Mixed ability</div>
+      <div class="tab ${splitMode === 'same' ? 'active' : ''}" data-split-mode="same">Same stream</div>
+    </div>
+    <div class="muted small" style="margin-top:6px;">${splitMode === 'same'
+      ? 'Clusters players of similar ability onto the same team — handy for running side-by-side matches at different intensities.'
+      : 'Spreads each skill stream evenly across every team, for one fair, competitive match.'}</div>
+
     <div class="section-title">Squad (${included.length}/${active.length})</div>
-    <div class="card">
-      <div class="spread" style="margin-bottom:10px;">
+    <div class="card" style="overflow-x:auto;">
+      <div class="spread" style="margin-bottom:10px; flex-wrap:wrap; gap:8px;">
         <button class="btn ghost sm" data-action="select-all">Select All</button>
         <button class="btn ghost sm" data-action="select-none">Select None</button>
       </div>
-      <div class="chip-list">
-        ${active.length ? active.map((p) => squadChipHtml(p, includedIds.has(p.id))).join('') : '<span class="muted small">No active players on the roster.</span>'}
-      </div>
+      ${teamAllocValues.length ? `
+        <div class="muted small" style="margin-bottom:4px;">Team allocation</div>
+        <div class="chip-list" style="margin-bottom:12px;">
+          ${teamAllocValues.map((v) => `<button type="button" class="bench-chip ${squadTeamAllocFilter === v ? 'picking' : ''}" data-team-alloc-filter="${escapeHtml(v)}">${escapeHtml(v)}</button>`).join('')}
+          ${squadTeamAllocFilter ? '<button type="button" class="bench-chip" data-action="clear-team-alloc-filter">✕ Clear</button>' : ''}
+        </div>
+      ` : ''}
+      ${active.length ? `
+        <table style="width:100%; border-collapse:collapse; font-size:13px;">
+          <thead>
+            <tr>
+              <th style="padding:6px 8px;"></th>
+              <th data-squad-sort="name" style="text-align:left; padding:6px 8px; cursor:pointer; white-space:nowrap;">
+                Name${squadSortKey === 'name' ? (squadSortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+              </th>
+              <th data-squad-sort="stream" style="text-align:left; padding:6px 8px; cursor:pointer; white-space:nowrap;">
+                Stream${squadSortKey === 'stream' ? (squadSortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+              </th>
+              <th data-squad-sort="teamAllocation" style="text-align:left; padding:6px 8px; cursor:pointer; white-space:nowrap;">
+                Team Allocation${squadSortKey === 'teamAllocation' ? (squadSortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+              </th>
+              <th style="text-align:left; padding:6px 8px; white-space:nowrap;">Team</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${squadRows.length ? sortSquadPlayers(squadRows).map((p) => squadRowHtml(p, includedIds.has(p.id))).join('') : `<tr><td colspan="5" style="padding:6px 8px;"><span class="muted small">No players with this team allocation.</span></td></tr>`}
+          </tbody>
+        </table>
+      ` : '<span class="muted small">No active players on the roster.</span>'}
     </div>
 
     <button class="btn big block" data-action="split" style="margin:16px 0;" ${canSplit ? '' : 'disabled'}>🎲 ${split ? 'Shuffle Again' : 'Random Split'}</button>
@@ -191,7 +262,7 @@ export function renderBalanceTeams(app, gameId) {
         </div>
       </div>
       <textarea id="split-fallback" readonly hidden style="width:100%; min-height:100px; font-family:monospace; font-size:12px; padding:8px; border:1px solid var(--line); border-radius:8px; margin-bottom:12px;">${escapeHtml(formatSplitForShare(split, team.name))}</textarea>
-      <div class="muted small" style="margin-bottom:12px;">Not happy with the split? Tap a player, then tap "Move here →" on another team to move them.</div>
+      <div class="muted small" style="margin-bottom:12px;">Not happy with the split? Move a player between teams — either from the Squad table above, or the dropdown next to their name below.</div>
     ` : ''}
 
     ${matchTargetHtml(upcoming)}
@@ -203,14 +274,12 @@ export function renderBalanceTeams(app, gameId) {
     includedIds = new Set(active.map((p) => p.id));
     split = null;
     resetImportStatus();
-    resetTeamSelection();
     renderBalanceTeams(app, gameId);
   });
   app.querySelector('[data-action="select-none"]').addEventListener('click', () => {
     includedIds = new Set();
     split = null;
     resetImportStatus();
-    resetTeamSelection();
     renderBalanceTeams(app, gameId);
   });
 
@@ -219,7 +288,39 @@ export function renderBalanceTeams(app, gameId) {
       teamCount = Number(el.dataset.teamCount);
       split = null;
       resetImportStatus();
-      resetTeamSelection();
+      renderBalanceTeams(app, gameId);
+    });
+  });
+
+  app.querySelectorAll('[data-split-mode]').forEach((el) => {
+    el.addEventListener('click', () => {
+      splitMode = el.dataset.splitMode;
+      split = null;
+      resetImportStatus();
+      renderBalanceTeams(app, gameId);
+    });
+  });
+
+  app.querySelectorAll('[data-team-alloc-filter]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const value = btn.dataset.teamAllocFilter;
+      squadTeamAllocFilter = squadTeamAllocFilter === value ? null : value;
+      renderBalanceTeams(app, gameId);
+    });
+  });
+  const clearFilterBtn = app.querySelector('[data-action="clear-team-alloc-filter"]');
+  if (clearFilterBtn) {
+    clearFilterBtn.addEventListener('click', () => {
+      squadTeamAllocFilter = null;
+      renderBalanceTeams(app, gameId);
+    });
+  }
+
+  app.querySelectorAll('[data-squad-sort]').forEach((th) => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.squadSort;
+      if (squadSortKey === key) squadSortDir = squadSortDir === 'desc' ? 'asc' : 'desc';
+      else { squadSortKey = key; squadSortDir = 'asc'; }
       renderBalanceTeams(app, gameId);
     });
   });
@@ -231,49 +332,48 @@ export function renderBalanceTeams(app, gameId) {
       else includedIds.add(id);
       split = null;
       resetImportStatus();
-      resetTeamSelection();
       renderBalanceTeams(app, gameId);
+    });
+  });
+
+  // Saved straight to the player's roster record — it's a persistent club-
+  // team label (e.g. "9.4"), not part of this page's own included/split
+  // state, so it doesn't touch `split` and only needs a re-render if the
+  // table happens to be sorted by it right now.
+  app.querySelectorAll('[data-team-alloc]').forEach((el) => {
+    el.addEventListener('change', () => {
+      const id = el.dataset.teamAlloc;
+      const value = el.value.trim();
+      update((state) => {
+        const player = state.players.find((pl) => pl.id === id);
+        if (player) player.teamAllocation = value;
+      });
+      if (squadSortKey === 'teamAllocation') renderBalanceTeams(app, gameId);
     });
   });
 
   const splitBtn = app.querySelector('[data-action="split"]');
   if (splitBtn) {
     splitBtn.addEventListener('click', () => {
-      split = splitBalancedTeams(active.filter((p) => includedIds.has(p.id)), teamCount);
+      split = splitByMode(active.filter((p) => includedIds.has(p.id)), teamCount, splitMode);
       resetImportStatus();
-      resetTeamSelection();
       renderBalanceTeams(app, gameId);
     });
   }
 
-  app.querySelectorAll('[data-team-player]').forEach((el) => {
-    el.addEventListener('click', () => {
-      const playerId = el.dataset.teamPlayer;
-      const sourceIdx = Number(el.dataset.sourceTeamIdx);
-      if (selectingPlayerId === playerId) {
-        resetTeamSelection();
-      } else {
-        selectingPlayerId = playerId;
-        selectingSourceTeamIdx = sourceIdx;
-      }
-      renderBalanceTeams(app, gameId);
-    });
-  });
-
-  app.querySelectorAll('[data-move-to-team]').forEach((el) => {
-    el.addEventListener('click', () => {
-      const targetIdx = Number(el.dataset.moveToTeam);
-      const playerId = selectingPlayerId;
-      const sourceIdx = selectingSourceTeamIdx;
-      if (!playerId || sourceIdx == null || !split) return;
-      resetTeamSelection();
+  app.querySelectorAll('[data-team-assign]').forEach((sel) => {
+    sel.addEventListener('change', () => {
+      const playerId = sel.dataset.teamAssign;
+      const targetIdx = Number(sel.value);
+      const sourceIdx = teamIndexOf(playerId);
+      if (!split || sourceIdx == null || sourceIdx === targetIdx) return;
       const sourceTeam = split[sourceIdx];
       const targetTeam = split[targetIdx];
       if (!sourceTeam || !targetTeam) return;
       const moved = sourceTeam.find((p) => p.id === playerId);
       if (!moved) return;
       split[sourceIdx] = sourceTeam.filter((p) => p.id !== playerId);
-      if (!targetTeam.some((p) => p.id === playerId)) targetTeam.push(moved);
+      targetTeam.push(moved);
       // Either team's roster just changed — a previous "✅ Sent to X" tag
       // would now be describing a squad that no longer matches, so drop
       // it and let the coach re-send once they're happy with the move.
@@ -369,12 +469,28 @@ function wholeSquadImportHtml(included) {
   `;
 }
 
-function squadChipHtml(p, isIncluded) {
+function squadRowHtml(p, isIncluded) {
   return `
-    <button type="button" class="bench-chip ${isIncluded ? 'picking' : ''}" data-squad-toggle="${p.id}">
-      <span class="jersey">${p.jerseyNumber ?? '-'}</span>
-      ${escapeHtml(p.name)} ${streamBadgeHtml(p.skillStream)}
-    </button>
+    <tr style="border-top:1px solid var(--line);">
+      <td style="padding:6px 8px;"><input type="checkbox" data-squad-toggle="${p.id}" ${isIncluded ? 'checked' : ''} /></td>
+      <td style="padding:6px 8px; white-space:nowrap;"><span class="jersey" style="width:24px; height:24px; font-size:11px;">${p.jerseyNumber ?? '-'}</span> ${escapeHtml(p.name)}</td>
+      <td style="padding:6px 8px;">${streamBadgeHtml(p.skillStream)}</td>
+      <td style="padding:6px 8px;">
+        <input type="text" data-team-alloc="${p.id}" value="${escapeHtml(p.teamAllocation || '')}" placeholder="e.g. 9.4" style="width:80px; padding:4px 6px;" />
+      </td>
+      <td style="padding:6px 8px;">${splitTeamCellHtml(p, isIncluded)}</td>
+    </tr>
+  `;
+}
+
+function splitTeamCellHtml(p, isIncluded) {
+  if (!split) return '<span class="muted small">Not split yet</span>';
+  if (!isIncluded) return '<span class="muted small">—</span>';
+  const idx = teamIndexOf(p.id);
+  return `
+    <select data-team-assign="${p.id}">
+      ${split.map((_, i) => `<option value="${i}" ${i === idx ? 'selected' : ''}>Team ${i + 1}</option>`).join('')}
+    </select>
   `;
 }
 
@@ -389,24 +505,21 @@ function teamsHtml(teams, upcoming) {
 function teamCardHtml(label, team, idx, upcoming) {
   const counts = streamCounts(team);
   const imported = importedTeams[idx];
-  const isSourceTeam = selectingSourceTeamIdx === idx;
   return `
     <div class="card" style="flex:1 1 260px;">
-      <div class="spread" style="margin-bottom:6px;">
-        <div style="font-weight:700;">${label} (${team.length})</div>
-        ${selectingPlayerId && !isSourceTeam ? `<button type="button" class="btn ghost sm" data-move-to-team="${idx}">Move here →</button>` : ''}
-      </div>
+      <div style="font-weight:700; margin-bottom:6px;">${label} (${team.length})</div>
       <div class="muted small" style="margin-bottom:10px;">A:${counts.A} · B:${counts.B} · C:${counts.C} · D:${counts.D}${counts.none ? ` · Unclassified:${counts.none}` : ''}</div>
       <div class="stack">
         ${team.length ? team.map((p) => `
-          <button type="button" class="player-row" data-team-player="${p.id}" data-source-team-idx="${idx}" style="width:100%; text-align:left; background:none; border:none; cursor:pointer; padding:10px 6px; border-radius:8px; ${selectingPlayerId === p.id ? 'outline:2px solid var(--green-600);' : ''}">
+          <div class="player-row">
             <div class="jersey">${p.jerseyNumber ?? '-'}</div>
             <div class="player-meta">
               <div class="player-name">${escapeHtml(p.name)}</div>
               <div class="player-sub">${formatPositions(p)}</div>
             </div>
             ${streamBadgeHtml(p.skillStream)}
-          </button>
+            ${splitTeamCellHtml(p, true)}
+          </div>
         `).join('') : '<span class="muted small">No one on this team.</span>'}
       </div>
       ${upcoming.length ? `

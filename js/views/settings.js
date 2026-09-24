@@ -1,35 +1,50 @@
-import { getState, update, resetToSample, clearAllData, restoreFromBackup, mergeBackup, findPlayer, getAutoBackups, restoreAutoBackupById } from '../store.js';
+import { getState, update, resetToSample, clearAllData, restoreFromBackup, mergeBackup, findPlayer, getAutoBackups, restoreAutoBackupById, archivableCounts, buildArchivePayload, removeArchivedData } from '../store.js';
 import { PRESET_FORMATIONS, formationOptionsFor, buildCustomFormation, remapLineupToFormat } from '../formations.js';
-import { escapeHtml, uid, copyToClipboard, resizeImageFile, matchEligiblePlayers } from '../util.js';
+import { escapeHtml, uid, copyToClipboard, resizeImageFile, matchEligiblePlayers, todayIso } from '../util.js';
 import { openModal, closeModal, confirmDialog, alertDialog } from '../modal.js';
-import { AGE_FORMATS, suggestFormatForAgeGroup } from '../ageFormats.js';
 import { getErrorLog, clearErrorLog, formatErrorLogText } from '../errorLog.js';
-import { autoSaveFileSupported, chooseAutoSaveFile, getAutoSaveFileName, clearAutoSaveFile } from '../fileHandle.js';
+import { getSyncConfig, isMatchdayOnly, buildAppsScript, generateSyncTokens, setUpAsFullEditor, joinWithLink, syncNow, disconnectCloudSync } from '../cloudSync.js';
+
+// Guards a post-await re-render (e.g. after "Sync Now", which can take a
+// couple of seconds against a real Apps Script) against overwriting a
+// screen the coach has since navigated away to.
+function isOnSettingsRoute() {
+  const hash = location.hash || '#/';
+  return hash.replace(/^#\/?/, '').split('/')[0] === 'settings';
+}
+
+// Empty until the coach explicitly picks a cutoff date — archiving nothing
+// by default is safer than pre-selecting one that might surprise them.
+let archiveCutoffDate = '';
+// Set once the archive copy has actually been placed on the clipboard (or
+// the fallback text box shown) for the CURRENT cutoff date — changing the
+// date invalidates it, so "Remove" can never fire for a copy that doesn't
+// match what's about to be deleted.
+let archiveCopiedForDate = null;
+// Whether the "couldn't use the clipboard, here's the text to select
+// instead" fallback box is showing — its own content is always rendered
+// fresh from archiveCutoffDate in the template below (see the error-log
+// and Backup Team Data fallback boxes for the same pattern), rather than
+// set as a one-off runtime .value, since a later re-render (e.g. to show
+// the Remove button) would otherwise wipe out anything set that way.
+let archiveFallbackVisible = false;
 
 export function renderSettings(app) {
   const { team, players } = getState();
   const errorLog = getErrorLog();
   const autoBackups = getAutoBackups();
-  const fileSaveSupported = autoSaveFileSupported();
+  const syncConfig = getSyncConfig();
+  const archiveCounts = archiveCutoffDate ? archivableCounts(archiveCutoffDate) : { games: 0, trainings: 0 };
 
   app.innerHTML = `
     <div class="page-title"><h1>Settings</h1></div>
 
     <a class="btn ghost block" href="#/help" style="margin-bottom:12px;">❓ Help &amp; How-To</a>
 
-    <div class="card stack">
-      ${fileSaveSupported ? `
-        <p class="muted small mt-0">🗂️ A dated backup file downloads automatically after every match (see Data, below). This is instead for one single file, at a location you pick, that keeps overwriting itself with the latest data — so there's always exactly one current file rather than a growing pile. Desktop/laptop Chrome or Edge only — doesn't work on iPhone or iPad, even in Chrome there (see note below if that's what you're on).</p>
-        <div id="autosave-file-status" class="small">Checking…</div>
-        <button class="btn secondary block" data-action="choose-autosave-file">🗂️ Choose File Location</button>
-        <button class="btn ghost block" data-action="clear-autosave-file" hidden id="clear-autosave-btn">Turn Off</button>
-      ` : `
-        <p class="muted small mt-0">🗂️ A single self-updating backup file at a location you pick isn't available on this device. It needs a desktop or laptop browser (Chrome or Edge) — it doesn't work on iPhone or iPad in any browser, including Chrome there, since Apple requires every browser on iOS to use the same underlying engine, which doesn't support this. The dated backup file that downloads after every match (see Data, below) still works here, on any device.</p>
-      `}
-    </div>
-
     <div class="section-title">Team</div>
+    ${isMatchdayOnly() ? `<p class="muted small" style="margin:-4px 0 10px;">Team settings can only be changed from a Full Edit device — ask whoever set up Cloud Sync for that link if you need something changed here.</p>` : ''}
     <form id="team-form" class="card stack">
+      <fieldset ${isMatchdayOnly() ? 'disabled' : ''} style="border:none; padding:0; margin:0; display:contents;">
       <div class="row" style="align-items:center; margin-bottom:4px;">
         <span class="jersey" style="width:52px; height:52px; overflow:hidden; font-size:24px; background:${team.logoDataUrl ? '#fff' : ''};">
           ${team.logoDataUrl ? `<img src="${team.logoDataUrl}" alt="Club logo" style="width:100%; height:100%; object-fit:contain;" />` : '⚽'}
@@ -59,7 +74,6 @@ export function renderSettings(app) {
           </select>
         </div>
       </div>
-      <button type="button" class="btn ghost sm" data-action="suggest-format">Suggest format &amp; playing-time standard for this age group</button>
       <div class="field-row">
         <div class="field">
           <label>Default minutes per period</label>
@@ -78,7 +92,7 @@ export function renderSettings(app) {
       <div class="field">
         <label>Minimum playing time standard (% of match minutes)</label>
         <input type="number" name="minPlayingTimePercent" min="0" max="100" step="5" placeholder="e.g. 50" value="${team.minPlayingTimePercent ?? ''}" />
-        <p class="muted small" style="margin:4px 0 0;">The share of a match's total minutes every player should get at minimum, over the season — shown in Stats so you can see who's falling short. "Suggest format for this age group" below fills this in from the FAI/DDSL guide too.</p>
+        <p class="muted small" style="margin:4px 0 0;">The share of a match's total minutes every player should get at minimum, over the season — shown in Stats so you can see who's falling short.</p>
       </div>
       <label class="checkbox-row">
         <input type="checkbox" name="equalPlayingTimePolicy" ${team.equalPlayingTimePolicy ? 'checked' : ''} />
@@ -94,37 +108,11 @@ export function renderSettings(app) {
         Log yellow/red cards (recommended for older age groups)
       </label>
       <button type="submit" class="btn block">Save Team Settings</button>
+      </fieldset>
     </form>
 
-    <details class="card">
-      <summary style="cursor:pointer; font-weight:700;">Age-group format guide (FAI Player Development Plan)</summary>
-      <p class="muted small">The framework DDSL and most Irish schoolboy/schoolgirl leagues build their own rules on. Always confirm against your own league's current rule book — leagues sometimes vary, especially at U11/U12.</p>
-      <div style="overflow-x:auto;">
-        <table style="width:100%; border-collapse:collapse; font-size:12.5px;">
-          <thead>
-            <tr>
-              <th style="text-align:left; padding:5px 6px;">Age</th>
-              <th style="text-align:left; padding:5px 6px;">Format</th>
-              <th style="text-align:left; padding:5px 6px;">Duration</th>
-              <th style="text-align:left; padding:5px 6px;">Pitch</th>
-              <th style="text-align:left; padding:5px 6px;">Min Play%</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${AGE_FORMATS.map((b) => `
-              <tr style="border-top:1px solid var(--line);">
-                <td style="padding:5px 6px; font-weight:600;">${b.label}</td>
-                <td style="padding:5px 6px;">${b.squadFormat ? b.squadFormat + '-a-side' : '4v4 (no GK)'}</td>
-                <td style="padding:5px 6px;">${b.numPeriods} × ${b.periodMinutes} min</td>
-                <td style="padding:5px 6px;">${escapeHtml(b.pitch)}</td>
-                <td style="padding:5px 6px;">${b.minPlayingTimePercent != null ? b.minPlayingTimePercent + '%' : '—'}</td>
-              </tr>
-              ${b.notes ? `<tr><td colspan="5" class="muted" style="padding:0 6px 6px;">${escapeHtml(b.notes)}</td></tr>` : ''}
-            `).join('')}
-          </tbody>
-        </table>
-      </div>
-    </details>
+    <div class="section-title">Cloud Sync</div>
+    ${cloudSyncSectionHtml(syncConfig)}
 
     <div class="section-title">Formations</div>
     <div class="card">
@@ -160,8 +148,21 @@ export function renderSettings(app) {
       <button class="btn ghost block" data-action="merge-data">🔀 Merge in Another Coach's Backup</button>
     </div>
     <div class="card stack">
-      <p class="muted small mt-0">Boot Room also snapshots a backup automatically on this device every time a match finishes — no need to remember to do it yourself. Keeps the 5 most recent.</p>
-      ${autoBackups.length ? autoBackups.map(autoBackupRow).join('') : '<p class="muted small">None yet — one is saved the first time a match finishes.</p>'}
+      <p class="muted small mt-0">Boot Room also snapshots a backup automatically on this device whenever a match finishes, a training session is saved or ended, or a drill is saved — no need to remember to do it yourself. Keeps the 5 most recent.</p>
+      ${autoBackups.length ? autoBackups.map(autoBackupRow).join('') : '<p class="muted small">None yet — one is saved the first time a match finishes, a training session is saved, or a drill is saved.</p>'}
+    </div>
+    <div class="card stack">
+      <p class="muted small mt-0">Completed matches and training sessions from an old season can pile up over time, inflating Stats/History and every future automatic backup snapshot. Archiving copies out everything finished before a date you choose (nothing scheduled, live, or still in progress is ever touched, regardless of its date), then removes just that from this device.</p>
+      <div class="field" style="margin-bottom:0;">
+        <label>Archive everything completed before</label>
+        <input type="date" id="archive-cutoff-date" value="${escapeHtml(archiveCutoffDate)}" max="${todayIso()}" />
+      </div>
+      <p class="muted small" style="margin:0;">${archiveSummaryText(archiveCutoffDate, archiveCounts)}</p>
+      <button class="btn secondary block" data-action="copy-archive" ${archiveCutoffDate && (archiveCounts.games || archiveCounts.trainings) ? '' : 'disabled'}>📦 Copy Archive</button>
+      <textarea id="archive-fallback" readonly ${archiveFallbackVisible ? '' : 'hidden'} style="width:100%; min-height:100px; font-family:monospace; font-size:11px; padding:8px; border:1px solid var(--line); border-radius:8px;">${archiveCutoffDate ? escapeHtml(JSON.stringify(buildArchivePayload(archiveCutoffDate), null, 2)) : ''}</textarea>
+      ${archiveCopiedForDate && archiveCopiedForDate === archiveCutoffDate ? `
+        <button class="btn danger block" data-action="remove-archived">🗑 Remove Archived Data From This Device</button>
+      ` : ''}
     </div>
     <div class="card stack">
       <p class="muted small mt-0">Use these to demo the app or start fresh.</p>
@@ -202,27 +203,6 @@ export function renderSettings(app) {
       renderSettings(app);
     });
   }
-
-  app.querySelector('[data-action="suggest-format"]').addEventListener('click', () => {
-    const form = app.querySelector('#team-form');
-    const ageGroupValue = form.querySelector('[name="ageGroup"]').value;
-    const band = suggestFormatForAgeGroup(ageGroupValue);
-    if (!band) {
-      alertDialog('Enter an age group with a number in it (e.g. "U10") to get a suggestion.');
-      return;
-    }
-    if (band.minPlayingTimePercent != null) {
-      form.querySelector('[name="minPlayingTimePercent"]').value = String(band.minPlayingTimePercent);
-    }
-    if (!band.squadFormat) {
-      alertDialog(`${band.label}: ${band.notes}${band.minPlayingTimePercent != null ? ` Minimum playing time standard set to ${band.minPlayingTimePercent}%.` : ''}`);
-      return;
-    }
-    form.querySelector('[name="squadFormat"]').value = String(band.squadFormat);
-    form.querySelector('[name="periodMinutes"]').value = String(band.periodMinutes);
-    form.querySelector('[name="numPeriods"]').value = String(band.numPeriods);
-    alertDialog(`Suggested ${band.label} format applied: ${band.squadFormat}-a-side, ${band.numPeriods} × ${band.periodMinutes} min, minimum playing time standard ${band.minPlayingTimePercent}%.${band.notes ? ' ' + band.notes : ''} Review and hit Save Team Settings to keep it.`);
-  });
 
   app.querySelector('#team-form').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -295,6 +275,49 @@ export function renderSettings(app) {
   });
   app.querySelector('[data-action="restore-data"]').addEventListener('click', () => openRestoreModal());
   app.querySelector('[data-action="merge-data"]').addEventListener('click', () => openMergeModal(app));
+
+  const cloudSetupBtn = app.querySelector('[data-action="cloud-sync-setup"]');
+  if (cloudSetupBtn) cloudSetupBtn.addEventListener('click', () => openCloudSyncSetupModal(app));
+  const cloudJoinBtn = app.querySelector('[data-action="cloud-sync-join"]');
+  if (cloudJoinBtn) cloudJoinBtn.addEventListener('click', () => openCloudSyncJoinModal(app));
+  const cloudSyncNowBtn = app.querySelector('[data-action="cloud-sync-now"]');
+  if (cloudSyncNowBtn) {
+    cloudSyncNowBtn.addEventListener('click', async () => {
+      cloudSyncNowBtn.disabled = true;
+      cloudSyncNowBtn.textContent = 'Syncing…';
+      try {
+        await syncNow();
+        // A real sync (talking to Google) can take a couple of seconds —
+        // long enough that the coach may well have already tapped away to
+        // another tab before it resolves. Only re-render Settings if
+        // they're still actually looking at it; otherwise this would blow
+        // away whatever screen they've since navigated to.
+        if (isOnSettingsRoute()) renderSettings(app);
+      } catch (err) {
+        if (isOnSettingsRoute()) {
+          cloudSyncNowBtn.disabled = false;
+          cloudSyncNowBtn.textContent = '🔄 Sync Now';
+          alertDialog(err.message || 'Sync failed — check the connection and try again.');
+        }
+      }
+    });
+  }
+  const cloudShowLinksBtn = app.querySelector('[data-action="cloud-sync-show-links"]');
+  if (cloudShowLinksBtn) {
+    cloudShowLinksBtn.addEventListener('click', () => {
+      const cfg = getSyncConfig();
+      if (!cfg || !cfg.baseUrl) return;
+      openShareLinksModal(`${cfg.baseUrl}?token=${cfg.fullEditToken}`, `${cfg.baseUrl}?token=${cfg.matchdayToken}`);
+    });
+  }
+  const cloudDisconnectBtn = app.querySelector('[data-action="cloud-sync-disconnect"]');
+  if (cloudDisconnectBtn) {
+    cloudDisconnectBtn.addEventListener('click', async () => {
+      if (!(await confirmDialog('Disconnect Cloud Sync on this device? Your data here stays as-is — this just stops it syncing with the shared team. You can reconnect with the same link any time.', { okLabel: 'Disconnect' }))) return;
+      disconnectCloudSync();
+      renderSettings(app);
+    });
+  }
   app.querySelectorAll('[data-action="restore-auto-backup"]').forEach((btn) => {
     btn.addEventListener('click', async () => {
       if (!(await confirmDialog('Restore this automatic backup? It replaces everything currently in the app on this device.', { okLabel: 'Restore', danger: true }))) return;
@@ -303,29 +326,55 @@ export function renderSettings(app) {
     });
   });
 
-  if (fileSaveSupported) {
-    const statusEl = app.querySelector('#autosave-file-status');
-    const clearBtn = app.querySelector('#clear-autosave-btn');
-    getAutoSaveFileName().then((name) => {
-      const el = app.querySelector('#autosave-file-status');
-      const btn = app.querySelector('#clear-autosave-btn');
-      if (!el) return; // settings re-rendered before this resolved
-      el.textContent = name ? `Saving to: ${name}` : 'Not set up yet.';
-      if (btn) btn.hidden = !name;
+  const archiveDateInput = app.querySelector('#archive-cutoff-date');
+  if (archiveDateInput) {
+    archiveDateInput.addEventListener('change', () => {
+      archiveCutoffDate = archiveDateInput.value;
+      archiveCopiedForDate = null;
+      archiveFallbackVisible = false;
+      renderSettings(app);
     });
-    app.querySelector('[data-action="choose-autosave-file"]').addEventListener('click', async () => {
-      try {
-        const name = await chooseAutoSaveFile();
-        statusEl.textContent = `Saving to: ${name}`;
-        clearBtn.hidden = false;
-      } catch (e) {
-        if (e?.name !== 'AbortError') console.warn('Could not set the auto-save file', e);
+  }
+  const copyArchiveBtn = app.querySelector('[data-action="copy-archive"]');
+  if (copyArchiveBtn) {
+    copyArchiveBtn.addEventListener('click', async () => {
+      const json = JSON.stringify(buildArchivePayload(archiveCutoffDate), null, 2);
+      let usedFallback = false;
+      await copyToClipboard(json, {
+        onSuccess: () => {},
+        onFallback: () => { usedFallback = true; },
+      });
+      // Either path is a real copy the coach can now act on — show the
+      // Remove button either way, rather than only after a clipboard
+      // success (which can't be told apart from the coach just not
+      // having granted clipboard permission).
+      archiveCopiedForDate = archiveCutoffDate;
+      archiveFallbackVisible = usedFallback;
+      renderSettings(app);
+      const freshCopyBtn = app.querySelector('[data-action="copy-archive"]');
+      if (freshCopyBtn) {
+        freshCopyBtn.textContent = usedFallback ? 'Select the text below and copy it' : '✅ Copied! Paste it somewhere safe.';
+        setTimeout(() => { if (freshCopyBtn.isConnected) freshCopyBtn.textContent = '📦 Copy Archive'; }, 3000);
+      }
+      if (usedFallback) {
+        const freshFallback = app.querySelector('#archive-fallback');
+        freshFallback.focus();
+        freshFallback.select();
       }
     });
-    clearBtn.addEventListener('click', async () => {
-      await clearAutoSaveFile();
-      statusEl.textContent = 'Not set up yet.';
-      clearBtn.hidden = true;
+  }
+  const removeArchivedBtn = app.querySelector('[data-action="remove-archived"]');
+  if (removeArchivedBtn) {
+    removeArchivedBtn.addEventListener('click', async () => {
+      const counts = archivableCounts(archiveCutoffDate);
+      const parts = [];
+      if (counts.games) parts.push(`${counts.games} match${counts.games === 1 ? '' : 'es'}`);
+      if (counts.trainings) parts.push(`${counts.trainings} training session${counts.trainings === 1 ? '' : 's'}`);
+      if (!(await confirmDialog(`Remove ${parts.join(' and ')} from this device? Make sure you've saved the copy first — this can't be undone.`, { okLabel: 'Remove', danger: true }))) return;
+      removeArchivedData(archiveCutoffDate);
+      archiveCopiedForDate = null;
+      archiveFallbackVisible = false;
+      renderSettings(app);
     });
   }
 
@@ -374,6 +423,15 @@ export function renderSettings(app) {
     clearErrorLog();
     renderSettings(app);
   });
+}
+
+function archiveSummaryText(cutoffDate, counts) {
+  if (!cutoffDate) return 'Pick a date to see what would be archived.';
+  if (!counts.games && !counts.trainings) return `Nothing completed before ${cutoffDate} yet — nothing to archive.`;
+  const parts = [];
+  if (counts.games) parts.push(`${counts.games} match${counts.games === 1 ? '' : 'es'}`);
+  if (counts.trainings) parts.push(`${counts.trainings} training session${counts.trainings === 1 ? '' : 's'}`);
+  return `Would archive ${parts.join(' and ')} completed before ${cutoffDate}.`;
 }
 
 function autoBackupRow(backup) {
@@ -602,6 +660,176 @@ function openRestoreModal() {
         if (!(await confirmDialog('Restore this backup? It replaces everything currently in the app on this device.', { okLabel: 'Restore', danger: true }))) return;
         restoreFromBackup(parsed);
         closeModal();
+      });
+    },
+  });
+}
+
+function cloudSyncSectionHtml(syncConfig) {
+  if (!syncConfig) {
+    return `
+      <div class="card stack">
+        <p class="muted small mt-0">Share this team's setup and match data with other coaches all season instead of passing files back and forth — one coach sets it up (a few minutes, one time, using a free Google Sheet), then everyone else just pastes a link. See Help for the full walkthrough, including exactly what each access level can do.</p>
+        <button class="btn secondary block" data-action="cloud-sync-setup">🔗 Set Up Cloud Sync</button>
+        <p class="muted small" style="margin:-4px 0 0; text-align:center;">— I'm setting this up for the team</p>
+        <button class="btn ghost block" data-action="cloud-sync-join">🔑 I Have a Cloud Sync Link</button>
+      </div>
+    `;
+  }
+  const roleLabel = syncConfig.role === 'editor' ? 'Full Edit' : 'Matchday';
+  return `
+    <div class="card stack">
+      <p class="muted small mt-0">This device has <strong>${roleLabel}</strong> access${syncConfig.coachName ? ` (as ${escapeHtml(syncConfig.coachName)})` : ''}.${syncConfig.role === 'matchday' ? ' Roster and team settings can only be changed from a Full Edit device — those controls are hidden here, and a change to them wouldn\'t save to the shared team anyway.' : ''} Training sessions and the Drill Library aren't part of Cloud Sync — they stay on this device only.</p>
+      <div class="small">${syncConfig.lastSyncedAt ? `Last synced: ${new Date(syncConfig.lastSyncedAt).toLocaleString()}` : 'Not synced yet'}</div>
+      <div class="banner warn">⚠️ Running two matches at once (e.g. two pitches) is fine — each match syncs back independently. Just never have <strong>two devices both live-tracking the same match</strong> at the same time: sync isn't real-time, so whichever device syncs first can silently overwrite the other's events for that match. One device per live match.</div>
+      <button class="btn secondary block" data-action="cloud-sync-now">🔄 Sync Now</button>
+      ${syncConfig.role === 'editor' ? '<button class="btn ghost block" data-action="cloud-sync-show-links">📋 Show Share Links</button>' : ''}
+      <button class="btn ghost block" data-action="cloud-sync-disconnect">Disconnect This Device</button>
+    </div>
+  `;
+}
+
+function openCloudSyncSetupModal(app) {
+  openModal({
+    title: 'Set Up Cloud Sync',
+    bodyHtml: `
+      <ol class="stack" style="margin:0; padding-left:18px;">
+        <li>Create a new, blank Google Sheet (<a href="https://sheets.new" target="_blank" rel="noopener">sheets.new</a>) — the name doesn't matter.</li>
+        <li>In it, open <strong>Extensions → Apps Script</strong>, delete anything already there, and paste in the script below (generated just now for your team — nothing to edit).</li>
+      </ol>
+      <textarea id="cloud-sync-script" readonly style="width:100%; min-height:140px; font-family:monospace; font-size:11px; padding:8px; border:1px solid var(--line); border-radius:8px; margin:10px 0;"></textarea>
+      <button type="button" class="btn ghost sm" data-action="copy-cloud-script" style="margin-bottom:10px;">📋 Copy Script</button>
+      <ol class="stack" style="margin:0; padding-left:18px;" start="3">
+        <li>Click <strong>Deploy → New deployment</strong>, choose type <strong>Web app</strong>, set "Execute as" to <strong>Me</strong> and "Who has access" to <strong>Anyone</strong>, then Deploy. Google may show an "unverified app" warning for your own script — click <strong>Advanced → Go to (unsafe)</strong> to allow it.</li>
+        <li>Paste the URL it gives you (ending in <code>/exec</code>) below.</li>
+      </ol>
+      <form id="cloud-sync-setup-form" class="stack">
+        <div class="field">
+          <label>Web App URL</label>
+          <input type="url" name="baseUrl" placeholder="https://script.google.com/macros/s/.../exec" required />
+        </div>
+        <div class="field">
+          <label>Your name (optional — shown to other coaches when you sync)</label>
+          <input type="text" name="coachName" />
+        </div>
+        <div id="cloud-sync-setup-error" class="small" style="color:var(--red);" hidden></div>
+        <button type="submit" class="btn block">Finish Setup</button>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      const tokens = generateSyncTokens();
+      modalEl.querySelector('#cloud-sync-script').value = buildAppsScript(tokens);
+
+      modalEl.querySelector('[data-action="copy-cloud-script"]').addEventListener('click', async (e) => {
+        const btn = e.target;
+        await copyToClipboard(modalEl.querySelector('#cloud-sync-script').value, {
+          onSuccess: () => { btn.textContent = '✅ Copied'; },
+          onFallback: () => { modalEl.querySelector('#cloud-sync-script').select(); btn.textContent = 'Select the text above and copy it'; },
+        });
+        setTimeout(() => { btn.textContent = '📋 Copy Script'; }, 2500);
+      });
+
+      const errorEl = modalEl.querySelector('#cloud-sync-setup-error');
+      const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = false; };
+
+      modalEl.querySelector('#cloud-sync-setup-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorEl.hidden = true;
+        const fd = new FormData(e.target);
+        const submitBtn = e.target.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Setting up…';
+        try {
+          const { fullEditUrl, matchdayUrl } = await setUpAsFullEditor(fd.get('baseUrl'), fd.get('coachName'), tokens);
+          closeModal();
+          renderSettings(app);
+          openShareLinksModal(fullEditUrl, matchdayUrl);
+        } catch (err) {
+          showError(err.message || "Couldn't reach that URL — double check it and try again.");
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Finish Setup';
+        }
+      });
+    },
+  });
+}
+
+function openShareLinksModal(fullEditUrl, matchdayUrl) {
+  openModal({
+    title: 'Cloud Sync Is Set Up',
+    bodyHtml: `
+      <p class="muted small mt-0">This device is connected with Full Edit access. Copy the link below and send it (text, WhatsApp, email — however's easiest) to each other coach.</p>
+      <div class="field">
+        <label>Matchday link — for other coaches</label>
+        <textarea id="matchday-link-text" readonly style="width:100%; min-height:50px; font-family:monospace; font-size:11px; padding:8px; border:1px solid var(--line); border-radius:8px;">${escapeHtml(matchdayUrl)}</textarea>
+      </div>
+      <button type="button" class="btn secondary block" data-action="copy-matchday-link" style="margin:8px 0 14px;">📋 Copy Matchday Link</button>
+      <div class="field">
+        <label>Your own Full Edit link — keep this one private</label>
+        <textarea id="full-edit-link-text" readonly style="width:100%; min-height:50px; font-family:monospace; font-size:11px; padding:8px; border:1px solid var(--line); border-radius:8px;">${escapeHtml(fullEditUrl)}</textarea>
+      </div>
+      <button type="button" class="btn ghost block" data-action="copy-fulledit-link">📋 Copy Full Edit Link</button>
+    `,
+    onMount: (modalEl) => {
+      modalEl.querySelector('[data-action="copy-matchday-link"]').addEventListener('click', async (e) => {
+        const btn = e.target;
+        await copyToClipboard(matchdayUrl, {
+          onSuccess: () => { btn.textContent = '✅ Copied'; },
+          onFallback: () => { modalEl.querySelector('#matchday-link-text').select(); },
+        });
+        setTimeout(() => { btn.textContent = '📋 Copy Matchday Link'; }, 2500);
+      });
+      modalEl.querySelector('[data-action="copy-fulledit-link"]').addEventListener('click', async (e) => {
+        const btn = e.target;
+        await copyToClipboard(fullEditUrl, {
+          onSuccess: () => { btn.textContent = '✅ Copied'; },
+          onFallback: () => { modalEl.querySelector('#full-edit-link-text').select(); },
+        });
+        setTimeout(() => { btn.textContent = '📋 Copy Full Edit Link'; }, 2500);
+      });
+    },
+  });
+}
+
+function openCloudSyncJoinModal(app) {
+  openModal({
+    title: 'Connect to Cloud Sync',
+    bodyHtml: `
+      <p class="muted small mt-0">Paste the link another coach sent you. Whether you get Matchday or Full Edit access depends on which link they gave you.</p>
+      <form id="cloud-sync-join-form" class="stack">
+        <div class="field">
+          <label>Cloud Sync link</label>
+          <input type="url" name="url" placeholder="https://script.google.com/macros/s/...?token=..." required />
+        </div>
+        <div class="field">
+          <label>Your name (optional — shown to other coaches when you sync)</label>
+          <input type="text" name="coachName" />
+        </div>
+        <div id="cloud-sync-join-error" class="small" style="color:var(--red);" hidden></div>
+        <button type="submit" class="btn block">Connect</button>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      const errorEl = modalEl.querySelector('#cloud-sync-join-error');
+      const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = false; };
+
+      modalEl.querySelector('#cloud-sync-join-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        errorEl.hidden = true;
+        const fd = new FormData(e.target);
+        const submitBtn = e.target.querySelector('button[type="submit"]');
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Connecting…';
+        try {
+          const result = await joinWithLink(fd.get('url'), fd.get('coachName'));
+          closeModal();
+          renderSettings(app);
+          alertDialog(`Connected with ${result.role === 'editor' ? 'Full Edit' : 'Matchday'} access. The shared team's data has been brought in.`);
+        } catch (err) {
+          showError(err.message || "Couldn't connect — double check the link and try again.");
+          submitBtn.disabled = false;
+          submitBtn.textContent = 'Connect';
+        }
       });
     },
   });

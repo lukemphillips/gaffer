@@ -49,6 +49,18 @@ export function sortByDateTime(games) {
   return [...games].sort((a, b) => `${a.date}T${a.time}`.localeCompare(`${b.date}T${b.time}`));
 }
 
+// Fisher-Yates, returning a new array — shared by Balance Teams and
+// Training's random-split features so "shuffle before splitting" behaves
+// identically everywhere it's used.
+export function shuffleArray(list) {
+  const arr = [...list];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
 export function todayIso() {
   const d = new Date();
   return d.toISOString().slice(0, 10);
@@ -175,12 +187,43 @@ export function streamBadgeHtml(stream) {
   return `<span class="badge stream-${stream.toLowerCase()}">Stream ${stream}</span>`;
 }
 
-// Reads the new `positions` array, falling back to an older single
-// `position` string for data saved before multi-position support existed.
+// Shared skill-classification order for sorting and for splitting players
+// into balanced groups — unclassified always sorts/groups last.
+export const STREAM_ORDER = ['A', 'B', 'C', 'D', null];
+
+function streamSortIndex(stream) {
+  return STREAM_ORDER.indexOf(STREAM_ORDER.includes(stream) ? stream : null);
+}
+
+// Compares two players by name, stream, or team allocation — shared by the
+// Roster and Balance Teams sortable columns so both sort identically.
+// Ties always fall back to name. Team allocation compares numeric-aware,
+// so "9.4" sorts before "9.5" and "10.1" rather than lexicographically.
+export function comparePlayersBy(key, a, b) {
+  if (key === 'stream') {
+    return (streamSortIndex(a.skillStream) - streamSortIndex(b.skillStream)) || a.name.localeCompare(b.name);
+  }
+  if (key === 'teamAllocation') {
+    return (a.teamAllocation || '').localeCompare(b.teamAllocation || '', undefined, { numeric: true }) || a.name.localeCompare(b.name);
+  }
+  return a.name.localeCompare(b.name);
+}
+
+// Every distinct team-allocation value actually in use, numeric-aware (so
+// "9.4" comes before "9.5" and "10.1") — shared by Roster and Balance
+// Teams' filter chips, so neither ever offers a chip nothing is set to.
+export function usedTeamAllocationsInOrder(players) {
+  const used = new Set();
+  players.forEach((p) => { if (p.teamAllocation) used.add(p.teamAllocation); });
+  return [...used].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+}
+
+// A player saved before multi-position support existed had a single
+// `position` string rather than this `positions` array — store.js's
+// migratePlayers() upgrades that on the way into state, so every player
+// this reads has the array by the time it gets here.
 export function playerPositions(p) {
-  if (Array.isArray(p.positions) && p.positions.length) return p.positions;
-  if (p.position) return [p.position];
-  return [];
+  return Array.isArray(p.positions) ? p.positions : [];
 }
 
 export function formatPositions(p) {
