@@ -1,5 +1,5 @@
 import { getState, update, findGame } from '../store.js';
-import { escapeHtml, streamBadgeHtml, formatPositions, copyToClipboard, formatDate, sortByDateTime, matchEligiblePlayers, STREAM_ORDER, comparePlayersBy, shuffleArray, usedTeamAllocationsInOrder } from '../util.js';
+import { escapeHtml, streamBadgeHtml, formatPositions, copyToClipboard, formatDate, sortByDateTime, matchEligiblePlayers, STREAM_ORDER, comparePlayersBy, shuffleArray, usedTeamAllocationsInOrder, gameSquadFormat } from '../util.js';
 import { isJuniorAgeGroup } from '../ageFormats.js';
 import { buildGroupsByStream } from '../trainingGroups.js';
 import { formationFor, emptyLineupSlots } from '../formations.js';
@@ -136,7 +136,7 @@ function sendSquadToMatch(playerIds, gameId) {
     if (!g) return;
     // Respects a formation the coach already picked for this game (e.g. on
     // its Squad tab) rather than silently resetting it back to the default.
-    const formation = formationFor(state.team.squadFormat, g.formationId, state.team.customFormations || []);
+    const formation = formationFor(gameSquadFormat(g, state.team), g.formationId, state.team.customFormations || []);
     g.presentIds = [...playerIds];
     const presentPlayers = state.players.filter((p) => playerIds.includes(p.id));
     g.lineup = { slots: autoFillLineup(formation, presentPlayers, emptyLineupSlots(formation)) };
@@ -187,7 +187,7 @@ export function renderBalanceTeams(app, gameId) {
       </div>
     </div>
 
-    ${game ? `<a class="btn ghost sm" href="#/game/${game.id}" style="margin-bottom:12px; display:inline-flex;">← Back to game</a>` : ''}
+    <a class="btn ghost sm" href="${game ? `#/game/${game.id}` : '#/roster'}" style="margin-bottom:12px; display:inline-flex;">← Back to ${game ? 'game' : 'Roster'}</a>
 
     <div class="banner info">
       ${game
@@ -274,13 +274,17 @@ export function renderBalanceTeams(app, gameId) {
   `;
 
   app.querySelector('[data-action="select-all"]').addEventListener('click', () => {
-    includedIds = new Set(active.map((p) => p.id));
+    // Scoped to whatever the Team Allocation filter is currently showing
+    // (squadRows === active when no filter is set) — selecting "all"
+    // while filtered to one team should only add that team, not silently
+    // pull in everyone else hidden by the filter.
+    squadRows.forEach((p) => includedIds.add(p.id));
     split = null;
     resetImportStatus();
     renderBalanceTeams(app, gameId);
   });
   app.querySelector('[data-action="select-none"]').addEventListener('click', () => {
-    includedIds = new Set();
+    squadRows.forEach((p) => includedIds.delete(p.id));
     split = null;
     resetImportStatus();
     renderBalanceTeams(app, gameId);

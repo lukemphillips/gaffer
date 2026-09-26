@@ -1,8 +1,8 @@
 import { getState, update, findGame } from '../store.js';
-import { uid, escapeHtml, formatDate, formatTime, todayIso, matchTypeBadgeHtml, periodLabel, formatPositions, playerPositions, gameNumPeriods, gamePeriodMinutes, matchEligiblePlayers } from '../util.js';
-import { formationFor, formationOptionsFor, remapLineupToFormat } from '../formations.js';
+import { uid, escapeHtml, formatDate, formatTime, todayIso, matchTypeBadgeHtml, periodLabel, formatPositions, playerPositions, gameNumPeriods, gamePeriodMinutes, gameSquadFormat, matchEligiblePlayers } from '../util.js';
+import { formationFor, formationOptionsFor, remapLineupToFormat, formationHasGk } from '../formations.js';
 import { openModal, closeModal, confirmDialog, alertDialog } from '../modal.js';
-import { openGameForm } from './schedule.js';
+import { openGameForm, squadFormatOptionsHtml } from './schedule.js';
 import { subPlanSectionHtml, openSubPlanEntryForm, benchDueLineHtml } from '../subPlan.js';
 
 let selectingSlotId = null;
@@ -135,6 +135,8 @@ export function renderGameDetail(app, gameId, tab) {
       </div>
     </div>
 
+    <a class="btn ghost sm" href="#/schedule" style="margin-bottom:12px; display:inline-flex;">← Back to Matchday</a>
+
     <div class="card">
       <div class="card-row">
         <span class="small">🅲 Captain: <strong>${captainName(game) || 'Not set'}</strong></span>
@@ -165,6 +167,7 @@ export function renderGameDetail(app, gameId, tab) {
   app.querySelector('[data-action="add-matchday-opponent"]').addEventListener('click', () => openGameForm({
     date: game.date, location: game.location, isHome: game.isHome, matchType: game.matchType,
     periodMinutes: gamePeriodMinutes(game, getState().team), numPeriods: gameNumPeriods(game, getState().team),
+    squadFormat: gameSquadFormat(game, getState().team),
   }));
   app.querySelector('[data-action="set-captain"]').addEventListener('click', () => openHonoreeModal(game, {
     field: 'captainId', title: 'Set Captain', label: 'Captain',
@@ -268,8 +271,9 @@ function renderSquadTab(container, game) {
   if (game.status === 'live') return renderLiveSquadTab(container, game, active, present, absent);
   if (game.status === 'completed') return renderCompletedSquadTab(container, present, absent);
 
-  const formationOptions = formationOptionsFor(team.squadFormat, team.customFormations || []);
-  const formation = formationFor(team.squadFormat, game.formationId, team.customFormations || []);
+  const squadFormat = gameSquadFormat(game, team);
+  const formationOptions = formationOptionsFor(squadFormat, team.customFormations || []);
+  const formation = formationFor(squadFormat, game.formationId, team.customFormations || []);
   const slots = game.lineup.slots;
   const assignedIds = new Set(Object.values(slots).filter(Boolean));
   const bench = present.filter((p) => !assignedIds.has(p.id));
@@ -299,7 +303,7 @@ function renderSquadTab(container, game) {
         ${formationOptions.map((f) => `<option value="${f.id}" ${formation.id === f.id ? 'selected' : ''}>${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('')}
       </select>
     </div>
-    <div class="muted small" style="margin:4px 0 10px;">Want a different shape? <a href="#/settings">Create your own in Settings</a> — it'll show up here for every ${team.squadFormat}-a-side game.</div>
+    <div class="muted small" style="margin:4px 0 10px;">Want a different shape? <a href="#/settings">Create your own in Settings</a> — it'll show up here for every ${squadFormat}-a-side game.</div>
 
     <div class="spread" style="margin:0 0 10px;">
       <span class="muted small">${formation.label} · ${filledCount}/${formation.slots.length} filled</span>
@@ -308,7 +312,7 @@ function renderSquadTab(container, game) {
         <button class="btn ghost sm" data-action="clear-lineup">Clear Lineup</button>
       </div>
     </div>
-    <div class="banner info">Tap an open spot on the pitch, then tap a player to place them — or use "Auto-Fill" to place everyone present by their preferred position, then adjust from there. The GK spot sets your ${periodLabel(gameNumPeriods(game, team), 1)} keeper.</div>
+    <div class="banner info">Tap an open spot on the pitch, then tap a player to place them — or use "Auto-Fill" to place everyone present by their preferred position, then adjust from there.${formationHasGk(formation) ? ` The GK spot sets your ${periodLabel(gameNumPeriods(game, team), 1)} keeper.` : ' This format has no dedicated goalkeeper spot — everyone here is an outfield player.'}</div>
     <div class="pitch-wrap">
       <div class="pitch">
         ${formation.slots.map((slot) => pitchSlotHtml(slot, slots[slot.id] ? byId[slots[slot.id]] : null)).join('')}
@@ -339,7 +343,7 @@ function renderSquadTab(container, game) {
     selectingSlotId = null;
     update((state) => {
       const g = touchGame(state, game.id);
-      const newFormation = formationFor(state.team.squadFormat, newFormationId, state.team.customFormations || []);
+      const newFormation = formationFor(gameSquadFormat(g, state.team), newFormationId, state.team.customFormations || []);
       g.formationId = newFormationId;
       g.lineup.slots = remapLineupToFormat(g.lineup.slots, newFormation);
     });
@@ -639,9 +643,10 @@ async function startGame(game) {
   const outfieldIds = Object.entries(game.lineup.slots)
     .filter(([slotId, pid]) => slotId !== 'gk' && pid)
     .map(([, pid]) => pid);
+  const hasGk = formationHasGk(formationFor(gameSquadFormat(game, team), game.formationId, team.customFormations || []));
 
   if (!presentIds.length && !(await confirmDialog('No players marked present yet. Start the game anyway?'))) return;
-  if (!gkId && !(await confirmDialog(`No goalkeeper set for the ${periodLabel(gameNumPeriods(game, team), 1)}. Start anyway?`))) return;
+  if (hasGk && !gkId && !(await confirmDialog(`No goalkeeper set for the ${periodLabel(gameNumPeriods(game, team), 1)}. Start anyway?`))) return;
 
   const carryover = matchDayCarryover(games, game);
   const playingTime = {};
@@ -726,6 +731,11 @@ function openEditGameForm(game) {
           Home game
         </label>
         ${game.status === 'scheduled' ? `
+          <div class="field">
+            <label>Format</label>
+            <select name="squadFormat">${squadFormatOptionsHtml(gameSquadFormat(game, getState().team))}</select>
+            <p class="muted small" style="margin:4px 0 0;">Changing this switches to that size's default formation — worth a check on the Squad tab's pitch layout afterward.</p>
+          </div>
           <div class="field-row">
             <div class="field">
               <label>Minutes per period</label>
@@ -774,6 +784,19 @@ function openEditGameForm(game) {
           // (see the squad-format block in Settings for the same reason).
           if (fd.has('periodMinutes')) g.periodMinutes = Number(fd.get('periodMinutes')) || g.periodMinutes;
           if (fd.has('numPeriods')) g.numPeriods = Number(fd.get('numPeriods')) || g.numPeriods;
+          if (fd.has('squadFormat')) {
+            const newSquadFormat = Number(fd.get('squadFormat')) || gameSquadFormat(g, state.team);
+            if (newSquadFormat !== gameSquadFormat(g, state.team)) {
+              // null (rather than the team's own current default) so this
+              // game keeps inheriting — and reshaping alongside — the team
+              // default if that's changed later in Settings, same as a
+              // game that was never given its own override at all.
+              g.squadFormat = newSquadFormat === state.team.squadFormat ? null : newSquadFormat;
+              g.formationId = null;
+              const newFormation = formationFor(newSquadFormat, null, state.team.customFormations || []);
+              g.lineup.slots = remapLineupToFormat(g.lineup.slots, newFormation);
+            }
+          }
         });
         closeModal();
       });

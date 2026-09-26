@@ -1,6 +1,6 @@
 import { getState, update, findGame, saveAutoBackup } from '../store.js';
-import { uid, escapeHtml, formatClock, formatDate, periodLabel, matchTypeBadgeHtml, gameNumPeriods, gamePeriodMinutes, upcomingSubs, pickIncoming, pickOutgoing, tryDownloadFile, matchEligiblePlayers, playerPositions } from '../util.js';
-import { outfieldTargetCount, formationFor, formationOptionsFor } from '../formations.js';
+import { uid, escapeHtml, formatClock, formatDate, periodLabel, matchTypeBadgeHtml, gameNumPeriods, gamePeriodMinutes, gameSquadFormat, upcomingSubs, pickIncoming, pickOutgoing, tryDownloadFile, matchEligiblePlayers, playerPositions } from '../util.js';
+import { outfieldTargetCount, formationFor, formationOptionsFor, formationHasGk } from '../formations.js';
 import { violatedRules } from '../rules.js';
 import { openModal, closeModal, confirmDialog, alertDialog } from '../modal.js';
 import { subPlanSectionHtml, openSubPlanEntryForm, benchDueLineHtml } from '../subPlan.js';
@@ -37,9 +37,11 @@ export function renderLiveGame(app, gameId) {
   const byId = Object.fromEntries(active.map((p) => [p.id, p]));
   const live = game.live;
   const isCompleted = game.status === 'completed';
-  const targetOutfield = outfieldTargetCount(team.squadFormat);
-  const formation = formationFor(team.squadFormat, game.formationId, team.customFormations || []);
-  const formationOptions = formationOptionsFor(team.squadFormat, team.customFormations || []);
+  const squadFormat = gameSquadFormat(game, team);
+  const targetOutfield = outfieldTargetCount(squadFormat);
+  const formation = formationFor(squadFormat, game.formationId, team.customFormations || []);
+  const formationOptions = formationOptionsFor(squadFormat, team.customFormations || []);
+  const hasGk = formationHasGk(formation);
   const slotByPlayerId = Object.fromEntries(
     Object.entries(game.lineup?.slots || {}).filter(([, pid]) => pid).map(([slotId, pid]) => [pid, slotId])
   );
@@ -116,7 +118,7 @@ export function renderLiveGame(app, gameId) {
         </div>
         <div class="live-mini-actions">
           <button class="btn sm secondary" data-action="log-goal-us">⚽ Us +1</button>
-          <button class="btn sm ghost" data-action="log-save">🧤 Save</button>
+          ${hasGk ? `<button class="btn sm ghost" data-action="log-save">🧤 Save</button>` : ''}
           <button class="btn sm ghost" data-action="log-goal-them">🥅 Them +1</button>
         </div>
       </div>
@@ -147,7 +149,7 @@ export function renderLiveGame(app, gameId) {
           <button class="btn big ${live.running ? 'secondary' : ''}" data-action="toggle-run">${live.running ? '⏸ Pause' : '▶ Start'} Clock</button>
         </div>
         <div class="timer-actions">
-          <button class="btn ghost sm" data-action="log-save">🧤 GK Save</button>
+          ${hasGk ? `<button class="btn ghost sm" data-action="log-save">🧤 GK Save</button>` : ''}
           <button class="btn ghost sm" data-action="open-card-picker">${team.enableCards ? '🟨 Card' : '🚑 Remove'}</button>
           ${live.currentPeriod < numPeriods
             ? `<button class="btn secondary sm" data-action="next-period">Next: ${periodLabel(numPeriods, live.currentPeriod + 1)}</button>`
@@ -202,7 +204,7 @@ export function renderLiveGame(app, gameId) {
     ` : ''}
 
     <div class="section-title">On Field (${onFieldOutfield.length}${isCompleted ? '' : ` / ${targetOutfield} target`})</div>
-    ${goalkeeperCardHtml(team, numPeriods, live, currentGk, isCompleted)}
+    ${hasGk ? goalkeeperCardHtml(team, numPeriods, live, currentGk, isCompleted) : ''}
     <div class="onfield-grid">
       ${onFieldOutfield.length ? onFieldOutfield.map((p) => fieldCardHtml(p, live, isCompleted, true, team, slotLabelById[slotByPlayerId[p.id]])).join('') : '<span class="muted small">No one is on the field.</span>'}
     </div>
@@ -293,7 +295,13 @@ export function renderLiveGame(app, gameId) {
     if (gkAssignBtn) gkAssignBtn.addEventListener('click', () => openGkModal(gameId, active, presentIds, sentOffIds, live.currentPeriod, false));
 
     const nextPeriodBtns = app.querySelectorAll('[data-action="next-period"]');
-    nextPeriodBtns.forEach((btn) => btn.addEventListener('click', () => openGkModal(gameId, active, presentIds, sentOffIds, live.currentPeriod + 1, true)));
+    nextPeriodBtns.forEach((btn) => btn.addEventListener('click', () => {
+      // A keeperless format has no one to confirm — openGkModal's form
+      // requires picking a player before it'll even submit, which would
+      // otherwise leave a coach unable to ever start the next period.
+      if (hasGk) openGkModal(gameId, active, presentIds, sentOffIds, live.currentPeriod + 1, true);
+      else advanceToNextPeriod(gameId, live.currentPeriod + 1);
+    }));
 
     app.querySelector('[data-action="end-game"]').addEventListener('click', async () => {
       const msg = live.currentPeriod < numPeriods
@@ -548,7 +556,7 @@ function openFormationModal(gameId, formationOptions, currentFormationId) {
         const newFormationId = new FormData(e.target).get('formationId');
         update((state) => {
           const g = state.games.find((x) => x.id === gameId);
-          const newFormation = formationFor(state.team.squadFormat, newFormationId, state.team.customFormations || []);
+          const newFormation = formationFor(gameSquadFormat(g, state.team), newFormationId, state.team.customFormations || []);
           g.formationId = newFormationId;
           g.lineup.slots = remapLiveFormation(g.lineup.slots, g.live.onField, g.live.gkByPeriod[g.live.currentPeriod], newFormation);
         });
@@ -1357,6 +1365,23 @@ function openRecoverModal(gameId, player) {
         closeModal();
       });
     },
+  });
+}
+
+// The no-GK counterpart to openGkModal's advancePeriod branch — same
+// period-advance bookkeeping, minus anything to do with a keeper, for a
+// format that doesn't have one at all.
+async function advanceToNextPeriod(gameId, targetPeriod) {
+  const game = findGame(gameId);
+  const numPeriods = gameNumPeriods(game, getState().team);
+  if (!(await confirmDialog(`Starting a new period pauses the clock. Continue to ${periodLabel(numPeriods, targetPeriod)}?`, { okLabel: 'Continue' }))) return;
+  update((state) => {
+    const g = state.games.find((x) => x.id === gameId);
+    g.live.currentPeriod = targetPeriod;
+    g.live.periodStartElapsed = g.live.periodStartElapsed || {};
+    g.live.periodStartElapsed[targetPeriod] = g.live.elapsedSeconds;
+    g.live.running = false;
+    g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'period-start', period: targetPeriod });
   });
 }
 
