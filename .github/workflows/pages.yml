@@ -22,6 +22,11 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+      - name: Stamp deploy version
+        # Fetched client-side (see index.html) to detect a stale cached
+        # copy of the app's own JS and prompt for an update — this file
+        # itself needs to change on every deploy for that to work.
+        run: echo "${{ github.sha }}" > version.txt
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
