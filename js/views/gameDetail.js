@@ -3,7 +3,7 @@ import { uid, escapeHtml, formatDate, formatTime, todayIso, matchTypeBadgeHtml, 
 import { formationFor, formationOptionsFor, remapLineupToFormat, formationHasGk } from '../formations.js';
 import { openModal, closeModal, confirmDialog, alertDialog } from '../modal.js';
 import { openGameForm, squadFormatOptionsHtml } from './schedule.js';
-import { subPlanSectionHtml, openSubPlanEntryForm, benchDueLineHtml } from '../subPlan.js';
+import { sortSubPlan, subPlanSectionHtml, subPlanRowHtml, openSubPlanEntryForm, benchDueLineHtml } from '../subPlan.js';
 
 let selectingSlotId = null;
 
@@ -38,6 +38,15 @@ function rsvpBadgeHtml(status) {
   return `<span class="badge ${b.cls}" title="${b.label}">${b.icon}</span>`;
 }
 
+function attendanceChipHtml(p, isPresent, rsvpStatus) {
+  return `
+    <button type="button" class="bench-chip ${isPresent ? 'picking' : ''}" data-attendance-toggle="${p.id}">
+      <span class="jersey">${p.jerseyNumber ?? '-'}</span>
+      ${escapeHtml(p.name)} ${isPresent ? '✅' : '⚪'} ${rsvpStatus && rsvpStatus !== 'pending' ? rsvpBadgeHtml(rsvpStatus) : ''}
+    </button>
+  `;
+}
+
 // Other games on the same date — used to confirm a match day opponent
 // was actually added (rather than the coach just seeing the same "+ Add"
 // button again with no sign anything happened) and to show its status.
@@ -49,6 +58,12 @@ function matchDaySiblings(game) {
 function matchDaySiblingsHtml(game) {
   const siblings = matchDaySiblings(game);
   if (!siblings.length) return '';
+  // A plain, always-visible block rather than a <details> — this header
+  // re-renders on every Squad tab action (any lineup edit re-renders the
+  // whole game detail page, not just the tab), which made a collapsed
+  // state here liable to the same "pops back open" problem the Squad
+  // tab's own sections had. The content's short enough that collapsing
+  // it isn't worth that risk.
   return `
     <div class="card">
       <div class="muted small" style="margin-bottom:6px;">Also on this date:</div>
@@ -289,74 +304,76 @@ function renderSquadTab(container, game) {
 
   const byId = Object.fromEntries(active.map((p) => [p.id, p]));
 
+  const subPlanCount = (game.subPlan || []).length;
+
   container.innerHTML = `
-    <div class="section-title" style="margin-top:0;">Who's here today?</div>
-    <div class="card">
-      <div class="spread" style="margin-bottom:10px;">
-        <span class="muted small">${present.length}/${active.length} present${rsvpYes.length ? ` · ${rsvpYes.length} RSVP'd In` : ''}</span>
-        <div class="row" style="gap:8px;">
-          <button class="btn secondary sm" data-action="use-rsvp-list" ${rsvpYes.length ? '' : 'disabled'}>✅ Use RSVP List</button>
-          <button class="btn ghost sm" data-action="mark-all-present">Mark All Present</button>
+    <div class="card" style="margin-top:0;">
+      <div class="spread">
+        <div>
+          <div style="font-weight:700;">Who's here today?</div>
+          <div class="small muted" style="margin-top:2px;">${present.length}/${active.length} present${rsvpYes.length ? ` · ${rsvpYes.length} RSVP'd In` : ''}</div>
         </div>
+        <button class="btn ghost sm" data-action="open-attendance">Edit</button>
       </div>
-      <div class="chip-list">
-        ${active.length ? active.map((p) => attendanceChipHtml(p, presentIds.has(p.id), game.rsvps?.[p.id])).join('') : '<span class="muted small">No active players on the roster.</span>'}
+      <div class="row" style="gap:8px; margin-top:10px; flex-wrap:wrap;">
+        <button class="btn secondary sm" data-action="mark-all-present">Mark All Present</button>
+        <button class="btn ghost sm" data-action="use-rsvp-list" ${rsvpYes.length ? '' : 'disabled'}>✅ Use RSVP List</button>
       </div>
     </div>
     ${present.length ? `<a class="btn ghost sm" href="#/balance/${game.id}" style="margin:10px 0; display:inline-flex;">🎲 Balance Teams from today's squad</a>` : ''}
 
-    <div class="field" style="margin:16px 0 0;">
-      <label>Formation</label>
-      <select id="formation-select">
-        ${formationOptions.map((f) => `<option value="${f.id}" ${formation.id === f.id ? 'selected' : ''}>${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('')}
-      </select>
-    </div>
-    <div class="muted small" style="margin:4px 0 10px;">Want a different shape? <a href="#/settings">Create your own in Settings</a> — it'll show up here for every ${squadFormat}-a-side game.</div>
-
-    <div class="spread" style="margin:0 0 10px;">
-      <span class="muted small">${formation.label} · ${filledCount}/${formation.slots.length} filled</span>
-      <div class="row" style="gap:8px;">
+    <div class="card" style="margin-top:16px;">
+      <div class="spread" style="gap:10px; flex-wrap:wrap;">
+        <div class="field" style="margin:0; flex:1 1 180px;">
+          <label class="small muted" style="margin-bottom:2px;">Formation</label>
+          <select id="formation-select">
+            ${formationOptions.map((f) => `<option value="${f.id}" ${formation.id === f.id ? 'selected' : ''}>${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('')}
+          </select>
+        </div>
+        <span class="small muted" style="white-space:nowrap;">${filledCount}/${formation.slots.length} filled</span>
+      </div>
+      <div class="row" style="gap:8px; margin-top:10px; flex-wrap:wrap;">
         <button class="btn secondary sm" data-action="auto-fill-lineup" ${present.length && filledCount < formation.slots.length ? '' : 'disabled'}>⚡ Auto-Fill</button>
         <button class="btn ghost sm" data-action="clear-lineup">Clear Lineup</button>
+        ${otherScheduledGames.length ? `<button class="btn ghost sm" data-action="apply-squad-to-others" ${present.length ? '' : 'disabled'}>📋 Apply to Other Matches</button>` : ''}
       </div>
     </div>
-    ${otherScheduledGames.length ? `
-      <button class="btn ghost sm" data-action="apply-squad-to-others" ${present.length ? '' : 'disabled'} style="margin:0 0 10px;">📋 Apply Squad to Other Matches</button>
-    ` : ''}
-    <div class="banner info">Tap an open spot on the pitch, then tap a player to place them — or use "Auto-Fill" to place everyone present by their preferred position, then adjust from there.${formationHasGk(formation) ? ` The GK spot sets your ${periodLabel(gameNumPeriods(game, team), 1)} keeper.` : ' This format has no dedicated goalkeeper spot — everyone here is an outfield player.'}</div>
+    ${filledCount === 0 ? `
+      <div class="banner info" style="margin-top:10px;">Tap an open spot, then tap a player to place them — or use "Auto-Fill" to place everyone present by their preferred position.${formationHasGk(formation) ? ` The GK spot sets your ${periodLabel(gameNumPeriods(game, team), 1)} keeper.` : ' This format has no dedicated goalkeeper spot — everyone here is an outfield player.'}</div>
+    ` : `
+      <div class="muted small" style="margin-top:10px;">Tap a player on the pitch, then tap another spot or the bench to move or swap them.</div>
+    `}
     <div class="pitch-wrap">
       <div class="pitch">
         ${formation.slots.map((slot) => pitchSlotHtml(slot, slots[slot.id] ? byId[slots[slot.id]] : null)).join('')}
       </div>
     </div>
     <div class="section-title">Bench (${bench.length})</div>
-    <div class="bench-list">
+    <div class="player-grid">
       ${bench.length ? bench.map((p) => benchChipHtml(p)).join('') : `<span class="muted small">${present.length ? 'Everyone present is on the pitch.' : 'Mark players present above to build your squad.'}</span>`}
     </div>
 
-    ${present.length ? subPlanSectionHtml(game.subPlan || [], byId, { elapsedMinutes: null, showExecute: false }) : ''}
-
-    ${absent.length ? `
-      <div class="section-title">Not here (${absent.length})</div>
-      <div class="muted small">${absent.map((p) => escapeHtml(p.name)).join(', ')}</div>
+    ${present.length ? `
+      <div class="card" style="margin-top:16px;">
+        <div class="spread">
+          <div style="font-weight:700;">📋 Substitution Plan</div>
+          <span class="small muted">${subPlanCount ? `${subPlanCount} planned` : 'None yet'}</span>
+        </div>
+        <button class="btn ghost sm block" data-action="open-sub-plan" style="margin-top:10px;">${subPlanCount ? 'Manage Plan' : '+ Add Planned Sub'}</button>
+      </div>
     ` : ''}
+
+    ${absent.length ? `<div class="muted small" style="margin-top:16px;">Not here: ${absent.map((p) => escapeHtml(p.name)).join(', ')}</div>` : ''}
   `;
+
+  container.querySelector('[data-action="open-attendance"]').addEventListener('click', () => {
+    openAttendanceModal(game);
+  });
 
   container.querySelector('[data-action="mark-all-present"]').addEventListener('click', () => {
     update((state) => {
       const g = touchGame(state, game.id);
       g.presentIds = matchEligiblePlayers(state.players).map((p) => p.id);
-    });
-  });
-
-  container.querySelector('#formation-select').addEventListener('change', (e) => {
-    const newFormationId = e.target.value;
-    selectingSlotId = null;
-    update((state) => {
-      const g = touchGame(state, game.id);
-      const newFormation = formationFor(gameSquadFormat(g, state.team), newFormationId, state.team.customFormations || []);
-      g.formationId = newFormationId;
-      g.lineup.slots = remapLineupToFormat(g.lineup.slots, newFormation);
     });
   });
 
@@ -371,22 +388,19 @@ function renderSquadTab(container, game) {
     });
   }
 
-  container.querySelectorAll('[data-attendance-toggle]').forEach((el) => {
-    el.addEventListener('click', () => {
-      const playerId = el.dataset.attendanceToggle;
-      update((state) => {
-        const g = touchGame(state, game.id);
-        const set = new Set(g.presentIds || []);
-        if (set.has(playerId)) {
-          set.delete(playerId);
-          Object.keys(g.lineup.slots).forEach((sid) => {
-            if (g.lineup.slots[sid] === playerId) g.lineup.slots[sid] = null;
-          });
-        } else {
-          set.add(playerId);
-        }
-        g.presentIds = [...set];
-      });
+  const openSubPlanBtn = container.querySelector('[data-action="open-sub-plan"]');
+  if (openSubPlanBtn) {
+    openSubPlanBtn.addEventListener('click', () => openSubPlanListModal(game, present, byId));
+  }
+
+  container.querySelector('#formation-select').addEventListener('change', (e) => {
+    const newFormationId = e.target.value;
+    selectingSlotId = null;
+    update((state) => {
+      const g = touchGame(state, game.id);
+      const newFormation = formationFor(gameSquadFormat(g, state.team), newFormationId, state.team.customFormations || []);
+      g.formationId = newFormationId;
+      g.lineup.slots = remapLineupToFormat(g.lineup.slots, newFormation);
     });
   });
 
@@ -416,19 +430,48 @@ function renderSquadTab(container, game) {
     });
   }
 
+  // Tapping any pitch slot (filled or empty) selects it; what happens
+  // next depends on the second tap:
+  //   - the SAME slot again        -> deselect, or clear it if it had a
+  //                                    player (one tap to "nevermind", a
+  //                                    second to actually take them off)
+  //   - a DIFFERENT pitch slot     -> swap the two slots' occupants
+  //                                    (either side can be empty, which
+  //                                    makes this a plain move)
+  //   - a bench player             -> that player takes the selected
+  //                                    slot; whoever was already there
+  //                                    (if anyone) goes to the bench
+  // This replaces the old behavior where tapping a filled slot instantly
+  // cleared it and swapping two on-pitch players took three separate
+  // taps (clear one, place the other, re-place the first).
   container.querySelectorAll('[data-pitch-slot]').forEach((el) => {
     el.addEventListener('click', () => {
       const slotId = el.dataset.pitchSlot;
-      const occupantId = slots[slotId];
-      if (occupantId) {
+      if (selectingSlotId === slotId) {
+        selectingSlotId = null;
+        if (slots[slotId]) {
+          update((state) => {
+            const g = touchGame(state, game.id);
+            g.lineup.slots[slotId] = null;
+          });
+        } else {
+          renderSquadTab(container, findGame(game.id));
+        }
+        return;
+      }
+      if (selectingSlotId) {
+        const fromSlotId = selectingSlotId;
         selectingSlotId = null;
         update((state) => {
           const g = touchGame(state, game.id);
-          g.lineup.slots[slotId] = null;
+          const fromOccupant = g.lineup.slots[fromSlotId];
+          const toOccupant = g.lineup.slots[slotId];
+          g.lineup.slots[slotId] = fromOccupant;
+          g.lineup.slots[fromSlotId] = toOccupant;
         });
         return;
       }
-      selectingSlotId = selectingSlotId === slotId ? null : slotId;
+      selectingSlotId = slotId;
       renderSquadTab(container, findGame(game.id));
     });
   });
@@ -445,56 +488,6 @@ function renderSquadTab(container, game) {
       });
     });
   });
-
-  const addPlanBtn = container.querySelector('[data-action="add-plan-entry"]');
-  if (addPlanBtn) {
-    addPlanBtn.addEventListener('click', () => {
-      openSubPlanEntryForm({
-        outgoingOptions: present,
-        incomingOptions: present,
-        onSave: (entry) => {
-          update((state) => {
-            const g = touchGame(state, game.id);
-            g.subPlan = g.subPlan || [];
-            g.subPlan.push({ id: uid(), outId: entry.outId, inId: entry.inId, atMinute: entry.atMinute });
-          });
-        },
-      });
-    });
-  }
-  container.querySelectorAll('[data-action="edit-plan-entry"]').forEach((el) => {
-    el.addEventListener('click', () => {
-      const existing = (game.subPlan || []).find((e) => e.id === el.dataset.planId);
-      if (!existing) return;
-      openSubPlanEntryForm({
-        existing,
-        outgoingOptions: present,
-        incomingOptions: present,
-        onSave: (entry) => {
-          update((state) => {
-            const g = touchGame(state, game.id);
-            const idx = (g.subPlan || []).findIndex((e) => e.id === existing.id);
-            if (idx !== -1) g.subPlan[idx] = { ...entry, id: existing.id };
-          });
-        },
-        onDelete: (id) => {
-          update((state) => {
-            const g = touchGame(state, game.id);
-            g.subPlan = (g.subPlan || []).filter((e) => e.id !== id);
-          });
-        },
-      });
-    });
-  });
-
-  function attendanceChipHtml(p, isPresent, rsvpStatus) {
-    return `
-      <button type="button" class="bench-chip ${isPresent ? 'picking' : ''}" data-attendance-toggle="${p.id}">
-        <span class="jersey">${p.jerseyNumber ?? '-'}</span>
-        ${escapeHtml(p.name)} ${isPresent ? '✅' : '⚪'} ${rsvpStatus && rsvpStatus !== 'pending' ? rsvpBadgeHtml(rsvpStatus) : ''}
-      </button>
-    `;
-  }
 
   function pitchSlotHtml(slot, player) {
     const isSelecting = selectingSlotId === slot.id;
@@ -584,12 +577,156 @@ function openApplySquadModal(sourceGame, candidateGames) {
   });
 }
 
+// Attendance now lives in its own modal rather than an inline collapsible
+// section — a modal's own DOM isn't touched when the Squad tab re-renders
+// itself (which happens after nearly every lineup action), so there's
+// nothing to accidentally pop back open the way the collapsed section it
+// replaced sometimes did. Re-reads the game fresh on every redraw, since
+// toggling a player goes through the normal update()/touchGame() path
+// and nothing else re-renders this modal's own contents for it.
+function openAttendanceModal(gameRef) {
+  openModal({
+    title: "Who's here today?",
+    bodyHtml: `
+      <div id="attendance-modal-body"></div>
+      <div class="modal-actions">
+        <button type="button" class="btn block" data-close-modal>Done</button>
+      </div>
+    `,
+    onMount: (modalEl) => renderBody(modalEl),
+  });
+
+  function renderBody(modalEl) {
+    const game = findGame(gameRef.id);
+    const { players } = getState();
+    const active = matchEligiblePlayers(players);
+    const presentIds = new Set(game.presentIds || []);
+    const rsvpYes = active.filter((p) => game.rsvps?.[p.id] === 'yes');
+    const bodyEl = modalEl.querySelector('#attendance-modal-body');
+    bodyEl.innerHTML = `
+      <div class="spread" style="margin-bottom:10px;">
+        <span class="muted small">${presentIds.size}/${active.length} present${rsvpYes.length ? ` · ${rsvpYes.length} RSVP'd In` : ''}</span>
+        <div class="row" style="gap:8px;">
+          <button class="btn secondary sm" data-action="use-rsvp-list" ${rsvpYes.length ? '' : 'disabled'}>✅ Use RSVP List</button>
+          <button class="btn ghost sm" data-action="mark-all-present">Mark All Present</button>
+        </div>
+      </div>
+      <div class="player-grid">
+        ${active.length ? active.map((p) => attendanceChipHtml(p, presentIds.has(p.id), game.rsvps?.[p.id])).join('') : '<span class="muted small">No active players on the roster.</span>'}
+      </div>
+    `;
+
+    bodyEl.querySelector('[data-action="mark-all-present"]').addEventListener('click', () => {
+      update((state) => {
+        const g = touchGame(state, game.id);
+        g.presentIds = matchEligiblePlayers(state.players).map((p) => p.id);
+      });
+      renderBody(modalEl);
+    });
+
+    const useRsvpBtn = bodyEl.querySelector('[data-action="use-rsvp-list"]');
+    if (useRsvpBtn) {
+      useRsvpBtn.addEventListener('click', () => {
+        update((state) => {
+          const g = touchGame(state, game.id);
+          const rsvpYesIds = matchEligiblePlayers(state.players).filter((p) => g.rsvps?.[p.id] === 'yes').map((p) => p.id);
+          g.presentIds = [...new Set([...(g.presentIds || []), ...rsvpYesIds])];
+        });
+        renderBody(modalEl);
+      });
+    }
+
+    bodyEl.querySelectorAll('[data-attendance-toggle]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const playerId = el.dataset.attendanceToggle;
+        update((state) => {
+          const g = touchGame(state, game.id);
+          const set = new Set(g.presentIds || []);
+          if (set.has(playerId)) {
+            set.delete(playerId);
+            Object.keys(g.lineup.slots).forEach((sid) => {
+              if (g.lineup.slots[sid] === playerId) g.lineup.slots[sid] = null;
+            });
+          } else {
+            set.add(playerId);
+          }
+          g.presentIds = [...set];
+        });
+        renderBody(modalEl);
+      });
+    });
+  }
+}
+
+// Same reasoning as the attendance modal above, applied to the
+// Substitution Plan. Opening a single entry (openSubPlanEntryForm, in
+// subPlan.js) uses its own modal, which replaces this one — openModal
+// always closes whatever's currently open — so onSave/onDelete below
+// reopen this list modal once the entry form's closes, landing the coach
+// back on the updated list rather than the bare Squad tab.
+function openSubPlanListModal(gameRef, present, byId) {
+  const game = findGame(gameRef.id);
+  const sorted = sortSubPlan(game.subPlan || []);
+  openModal({
+    title: '📋 Substitution Plan',
+    bodyHtml: `
+      <p class="muted small" style="margin-top:0;">Your own rotation schedule — advisory only, nothing here subs a player on its own. Build it now, then work through it once the match is live.</p>
+      <div>
+        ${sorted.length ? sorted.map((entry) => subPlanRowHtml(entry, byId, { elapsedMinutes: null, showExecute: false })).join('') : '<p class="muted small" style="margin:0;">No subs planned yet.</p>'}
+      </div>
+      <button type="button" class="btn ghost sm block" data-action="add-plan-entry" style="margin-top:${sorted.length ? '10px' : '0'};">+ Add Planned Sub</button>
+    `,
+    onMount: (modalEl) => {
+      modalEl.querySelector('[data-action="add-plan-entry"]').addEventListener('click', () => {
+        openSubPlanEntryForm({
+          outgoingOptions: present,
+          incomingOptions: present,
+          onSave: (entry) => {
+            update((state) => {
+              const g = touchGame(state, game.id);
+              g.subPlan = g.subPlan || [];
+              g.subPlan.push({ id: uid(), outId: entry.outId, inId: entry.inId, atMinute: entry.atMinute });
+            });
+            openSubPlanListModal(game, present, byId);
+          },
+        });
+      });
+      modalEl.querySelectorAll('[data-action="edit-plan-entry"]').forEach((el) => {
+        el.addEventListener('click', () => {
+          const existing = sorted.find((e) => e.id === el.dataset.planId);
+          if (!existing) return;
+          openSubPlanEntryForm({
+            existing,
+            outgoingOptions: present,
+            incomingOptions: present,
+            onSave: (entry) => {
+              update((state) => {
+                const g = touchGame(state, game.id);
+                const idx = (g.subPlan || []).findIndex((e) => e.id === existing.id);
+                if (idx !== -1) g.subPlan[idx] = { ...entry, id: existing.id };
+              });
+              openSubPlanListModal(game, present, byId);
+            },
+            onDelete: (id) => {
+              update((state) => {
+                const g = touchGame(state, game.id);
+                g.subPlan = (g.subPlan || []).filter((e) => e.id !== id);
+              });
+              openSubPlanListModal(game, present, byId);
+            },
+          });
+        });
+      });
+    },
+  });
+}
+
 function renderLiveSquadTab(container, game, active, present, absent) {
   container.innerHTML = `
     <div class="banner info">Game is live. Mark a late arrival present and they'll show up on the bench in the live view right away — <a href="#/game/${game.id}/live">go to Live Game</a>.</div>
     <div class="section-title" style="margin-top:0;">On the squad (${present.length})</div>
     <div class="card">
-      <div class="chip-list">
+      <div class="player-grid">
         ${present.length ? present.map((p) => `
           <span class="bench-chip picking">
             <span class="jersey">${p.jerseyNumber ?? '-'}</span>
@@ -602,7 +739,7 @@ function renderLiveSquadTab(container, game, active, present, absent) {
     ${absent.length ? `
       <div class="section-title">Not here yet (${absent.length})</div>
       <div class="card">
-        <div class="chip-list">
+        <div class="player-grid">
           ${absent.map((p) => `
             <button type="button" class="bench-chip" data-attendance-add="${p.id}">
               <span class="jersey">${p.jerseyNumber ?? '-'}</span>
@@ -629,7 +766,7 @@ function renderCompletedSquadTab(container, present, absent) {
   container.innerHTML = `
     <div class="section-title" style="margin-top:0;">Squad (${present.length})</div>
     <div class="card">
-      <div class="chip-list">
+      <div class="player-grid">
         ${present.length ? present.map((p) => `
           <span class="bench-chip picking">
             <span class="jersey">${p.jerseyNumber ?? '-'}</span>

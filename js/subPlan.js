@@ -81,7 +81,10 @@ export function openSubPlanEntryForm({ existing, outgoingOptions, incomingOption
   });
 }
 
-function subPlanRowHtml(entry, byId, { elapsedMinutes, showExecute }) {
+// Exported so the Squad tab's own modal-based plan list (gameDetail.js)
+// can render the same rows without duplicating this markup — see
+// openSubPlanListModal there.
+export function subPlanRowHtml(entry, byId, { elapsedMinutes, showExecute }) {
   const outName = escapeHtml(byId[entry.outId]?.name || '?');
   const inName = escapeHtml(byId[entry.inId]?.name || '?');
   let statusHtml = `<span class="badge pending">at ${entry.atMinute}′</span>`;
@@ -108,6 +111,12 @@ function subPlanRowHtml(entry, byId, { elapsedMinutes, showExecute }) {
 // elapsedMinutes: pass null pre-match (no clock yet — just shows the
 // planned minute), or the live match's current elapsed minutes to show a
 // due-now/countdown badge instead. showExecute only makes sense live.
+// Used as-is by the live match tracker; the pre-match Squad tab instead
+// shows a one-line summary and manages the plan in its own modal (see
+// openSubPlanListModal in gameDetail.js) — easier to follow, and avoids
+// an inline collapsed section having to survive the Squad tab's own
+// frequent full re-renders (every lineup action re-renders the whole
+// tab), which is what made it occasionally pop back open.
 export function subPlanSectionHtml(subPlan, byId, { elapsedMinutes = null, showExecute = false } = {}) {
   const sorted = sortSubPlan(subPlan);
   return `

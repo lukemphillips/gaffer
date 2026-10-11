@@ -1,5 +1,5 @@
 import { getState, update, findTraining, findDrill, saveAutoBackup } from '../store.js';
-import { uid, escapeHtml, formatDate, formatTime, formatClock, sortByDateTime, todayIso, nowHHMM, copyToClipboard, shuffleArray } from '../util.js';
+import { uid, escapeHtml, formatDate, formatTime, formatClock, sortByDateTime, todayIso, nowHHMM, copyToClipboard, shuffleArray, sortPlayersByName } from '../util.js';
 import { buildGroupsByStream } from '../trainingGroups.js';
 import { openModal, closeModal, confirmDialog } from '../modal.js';
 import { openDrillForm as openDrillLibraryForm, openDrillDetailModal } from './drills.js';
@@ -216,7 +216,7 @@ export function renderTrainingDetail(app, trainingId, tab) {
 
 function renderAttendanceTab(container, training) {
   const { players } = getState();
-  const active = players.filter((p) => p.active);
+  const active = sortPlayersByName(players.filter((p) => p.active));
   const presentIds = new Set(training.presentIds || []);
   const present = active.filter((p) => presentIds.has(p.id));
 
@@ -229,7 +229,7 @@ function renderAttendanceTab(container, training) {
       </div>
     </div>
     <div class="card">
-      <div class="chip-list">
+      <div class="player-grid">
         ${active.length ? active.map((p) => attendanceChipHtml(p, presentIds.has(p.id))).join('') : '<span class="muted small">No active players on the roster.</span>'}
       </div>
     </div>
@@ -400,7 +400,7 @@ function renderGroupsTab(container, training) {
 
 function groupCardHtml(group, byId) {
   const isSourceGroup = selectingSourceGroupId === group.id;
-  const groupPlayers = group.playerIds.map((id) => byId[id]).filter(Boolean);
+  const groupPlayers = sortPlayersByName(group.playerIds.map((id) => byId[id]).filter(Boolean));
   const counts = { A: 0, B: 0, C: 0, D: 0, none: 0 };
   groupPlayers.forEach((p) => { counts[p.skillStream && counts[p.skillStream] !== undefined ? p.skillStream : 'none'] += 1; });
   return `
@@ -635,7 +635,7 @@ function matchRoundCardHtml(round) {
 }
 
 function matchTeamCardHtml(team, byId) {
-  const teamPlayers = team.playerIds.map((id) => byId[id]).filter(Boolean);
+  const teamPlayers = sortPlayersByName(team.playerIds.map((id) => byId[id]).filter(Boolean));
   const counts = { A: 0, B: 0, C: 0, D: 0, none: 0 };
   teamPlayers.forEach((p) => { counts[p.skillStream && counts[p.skillStream] !== undefined ? p.skillStream : 'none'] += 1; });
   return `
@@ -901,14 +901,14 @@ function renderLiveTimer(container, training) {
       activityHtml = `
         <div class="muted small" style="text-align:center; margin-bottom:6px;">Rotation ${legIndex + 1} of ${totalLegs} · <span id="live-timer-rotation-clock">${formatClock(Math.max(0, legSeconds - secondsIntoLeg))}</span> left this rotation</div>
         <div class="stack">
-          ${assignments.map(({ group, activity, drillId }) => `<div class="small" style="text-align:center;"><strong>${escapeHtml(group.name)}:</strong> ${escapeHtml(activity || '—')} ${viewDrillButtonHtml(drillId)}</div>`).join('')}
+          ${assignments.map(({ group, activity, drillId }) => `<div style="text-align:center; font-size:16px; line-height:1.4;"><strong>${escapeHtml(group.name)}:</strong> ${escapeHtml(activity || '—')} ${viewDrillButtonHtml(drillId)}</div>`).join('')}
         </div>
       `;
     } else {
       const active = groups.filter((g) => ((block.groupActivities || {})[g.id] || '').trim());
       activityHtml = `
         <div class="stack">
-          ${active.map((g) => `<div class="small" style="text-align:center;"><strong>${escapeHtml(g.name)}:</strong> ${escapeHtml((block.groupActivities || {})[g.id])} ${viewDrillButtonHtml(resolveActivityDrillId((block.groupActivities || {})[g.id], (block.groupActivityDrillIds || {})[g.id]))}</div>`).join('') || '<div class="muted small" style="text-align:center;">No group activities set.</div>'}
+          ${active.map((g) => `<div style="text-align:center; font-size:16px; line-height:1.4;"><strong>${escapeHtml(g.name)}:</strong> ${escapeHtml((block.groupActivities || {})[g.id])} ${viewDrillButtonHtml(resolveActivityDrillId((block.groupActivities || {})[g.id], (block.groupActivityDrillIds || {})[g.id]))}</div>`).join('') || '<div class="muted small" style="text-align:center;">No group activities set.</div>'}
         </div>
       `;
     }
@@ -1023,28 +1023,28 @@ function blockCardHtml(block, index, total, groups) {
         </div>
       </div>
       ${block.isBreak
-        ? `<div class="muted small">Break${block.activity ? ': ' + escapeHtml(block.activity) : ''}</div>`
+        ? `<div class="muted" style="font-size:15px;">Break${block.activity ? ': ' + escapeHtml(block.activity) : ''}</div>`
         : block.mode === 'grouped' ? (isRotation ? `
-        <div class="muted small" style="margin-bottom:4px; font-weight:600;">Stations — every group rotates through${groups.length > stations.length ? ', some groups sharing a station at once' : ''}:</div>
+        <div class="muted small" style="margin-bottom:6px; font-weight:600;">Stations — every group rotates through${groups.length > stations.length ? ', some groups sharing a station at once' : ''}:</div>
         <div class="stack">
           ${stations.map((s, si) => `
-            <div class="small">
+            <div style="font-size:15.5px; line-height:1.4;">
               <strong>Station ${si + 1}:</strong> ${escapeHtml(s.activity || '—')}
               ${viewDrillButtonHtml(resolveActivityDrillId(s.activity, s.drillId))}
             </div>
           `).join('') || '<span class="muted small">No stations set.</span>'}
         </div>
       ` : `
-        <div class="muted small" style="margin-bottom:4px; font-weight:600;">Per group:</div>
+        <div class="muted small" style="margin-bottom:6px; font-weight:600;">Per group:</div>
         <div class="stack">
           ${Object.entries(block.groupActivities || {}).filter(([gid]) => groupsById[gid]).map(([gid, text]) => `
-            <div class="small">
+            <div style="font-size:15.5px; line-height:1.4;">
               <strong>${escapeHtml(groupsById[gid].name)}:</strong> ${escapeHtml(text || '—')}
               ${viewDrillButtonHtml(resolveActivityDrillId(text, (block.groupActivityDrillIds || {})[gid]))}
             </div>
           `).join('') || '<span class="muted small">No group activities set.</span>'}
         </div>
-      `) : `<div>${escapeHtml(block.activity || '—')} ${viewDrillButtonHtml(resolveActivityDrillId(block.activity, block.activityDrillId))}</div>`}
+      `) : `<div style="font-size:15.5px; line-height:1.4;">${escapeHtml(block.activity || '—')} ${viewDrillButtonHtml(resolveActivityDrillId(block.activity, block.activityDrillId))}</div>`}
     </div>
   `;
 }
