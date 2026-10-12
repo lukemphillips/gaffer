@@ -33,6 +33,66 @@ function sortColumns(team) {
   return cols;
 }
 
+// The compact Leaders table's own columns — just the handful of stats a
+// coach actually scans at a glance. sortColumns(team) above (the full
+// set, including PT%/POTM/captaincies/awards/attendance) is still used
+// for the per-player detail modal, and for the "more stats" sort dropdown
+// below (deepStatColumns) — whichever of those is currently active also
+// gets appended as an extra column here, so sorting by it never leaves a
+// value on screen unexplained.
+function keyStatColumns(team) {
+  const cols = [
+    { key: 'apps', label: 'Apps' },
+    { key: 'minutes', label: 'Min' },
+    { key: 'goals', label: 'G' },
+    { key: 'assists', label: 'A' },
+    { key: 'saves', label: 'Sv' },
+  ];
+  if (team.enableCards) {
+    cols.push({ key: 'yellows', label: 'Y' }, { key: 'reds', label: 'R' });
+  }
+  return cols;
+}
+
+// Stats not shown as a table column by default — reachable through the
+// "more stats" dropdown instead of crowding the table with 13 columns.
+function deepStatColumns(team) {
+  const keyKeys = new Set(keyStatColumns(team).map((c) => c.key));
+  return sortColumns(team).filter((c) => !keyKeys.has(c.key));
+}
+
+// Full-word labels for the player detail modal — the short single-letter/
+// icon labels above are only meant for a dense table header.
+const STAT_FULL_LABELS = {
+  apps: 'Appearances',
+  minutes: 'Minutes Played',
+  goals: 'Goals',
+  assists: 'Assists',
+  saves: 'Saves',
+  yellows: 'Yellow Cards',
+  reds: 'Red Cards',
+  playingTimePercent: 'Playing Time %',
+  potm: 'Player of the Match',
+  captaincies: 'Captaincies',
+  weeklyAwards: 'Weekly Awards',
+  attendance: 'Match Attendance',
+  trainingAttendance: 'Training Attendance',
+};
+
+// Shared by the leader card's headline number and the player detail
+// modal's full stat list, so the two never disagree on formatting.
+function statDisplayValue(row, key, team) {
+  if (key === 'minutes') return formatMinutes(row.minutes);
+  if (key === 'attendance') return row.attendance == null ? '—' : formatPercent(row.attendance);
+  if (key === 'trainingAttendance') return row.trainingAttendance == null ? '—' : formatPercent(row.trainingAttendance);
+  if (key === 'playingTimePercent') {
+    if (row.playingTimePercent == null) return '—';
+    const below = team.minPlayingTimePercent != null && Math.round(row.playingTimePercent * 100) < team.minPlayingTimePercent;
+    return `${below ? '⚠️ ' : ''}${formatPercent(row.playingTimePercent)}`;
+  }
+  return row[key];
+}
+
 let sortKey = 'goals';
 let sortDir = 'desc';
 
@@ -111,6 +171,7 @@ const NULLABLE_SORT_KEYS = ['attendance', 'trainingAttendance', 'playingTimePerc
 function sortRows(rows) {
   const dir = sortDir === 'asc' ? 1 : -1;
   return [...rows].sort((a, b) => {
+    if (sortKey === 'name') return a.player.name.localeCompare(b.player.name) * dir;
     const av = NULLABLE_SORT_KEYS.includes(sortKey) ? (a[sortKey] ?? -1) : a[sortKey];
     const bv = NULLABLE_SORT_KEYS.includes(sortKey) ? (b[sortKey] ?? -1) : b[sortKey];
     if (av === bv) return a.player.name.localeCompare(b.player.name);
@@ -276,7 +337,10 @@ export function renderStats(app) {
   const history = sortByDateTime(games).reverse();
   const months = historyByMonth(history);
   const h2h = headToHead();
-  const columns = sortColumns(team);
+  const baseColumns = keyStatColumns(team);
+  const deepColumns = deepStatColumns(team);
+  const activeDeepColumn = deepColumns.find((c) => c.key === sortKey);
+  const columns = activeDeepColumn ? [...baseColumns, activeDeepColumn] : baseColumns;
   const weeks = weeksWithGames();
   // Only the most recent couple of weeks need to be visible right away —
   // older ones are still one tap away, just tucked behind a drop-down
@@ -304,16 +368,25 @@ export function renderStats(app) {
     ` : ''}
 
     <div class="section-title">Leaders</div>
+    <p class="muted small" style="margin:-4px 0 4px;">Tap a column to sort, tap a player for their full stat breakdown.</p>
     ${team.minPlayingTimePercent != null ? `
-      <p class="muted small" style="margin:-4px 0 8px;">PT% is each player's share of the total minutes available across matches they were present for. ⚠️ flags anyone below this team's ${team.minPlayingTimePercent}% minimum playing time standard (set in <a href="#/settings">Settings</a>).</p>
+      <p class="muted small" style="margin:0 0 8px;">⚠️ = below this team's ${team.minPlayingTimePercent}% playing-time standard (<a href="#/settings">Settings</a>).</p>
     ` : ''}
-    <div class="card" style="overflow-x:auto;">
-      <table style="width:100%; border-collapse:collapse; font-size:13px;">
+    <div class="row" style="gap:8px; margin-bottom:10px;">
+      <select id="leader-deep-sort-select" style="flex:1;">
+        <option value=""${activeDeepColumn ? '' : ' selected'}>More stats to sort by…</option>
+        ${deepColumns.map((c) => `<option value="${c.key}"${sortKey === c.key ? ' selected' : ''}>${escapeHtml(STAT_FULL_LABELS[c.key] || c.label)}</option>`).join('')}
+      </select>
+    </div>
+    <div class="card" style="overflow-x:auto; padding:0;">
+      <table style="width:100%; border-collapse:collapse; font-size:13.5px;">
         <thead>
           <tr>
-            <th style="text-align:left; padding:6px 8px;">Player</th>
+            <th data-sort-col="name" style="text-align:left; padding:8px 10px; cursor:pointer; white-space:nowrap;">
+              Player${sortKey === 'name' ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+            </th>
             ${columns.map((c) => `
-              <th data-sort-col="${c.key}" style="text-align:right; padding:6px 8px; cursor:pointer; white-space:nowrap;">
+              <th data-sort-col="${c.key}" style="text-align:right; padding:8px 8px; cursor:pointer; white-space:nowrap;">
                 ${c.label}${sortKey === c.key ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
               </th>
             `).join('')}
@@ -342,8 +415,25 @@ export function renderStats(app) {
     th.addEventListener('click', () => {
       const key = th.dataset.sortCol;
       if (sortKey === key) sortDir = sortDir === 'desc' ? 'asc' : 'desc';
-      else { sortKey = key; sortDir = 'desc'; }
+      // Alphabetical sort reads more naturally starting A→Z; every stat
+      // column still starts highest-first, same as before.
+      else { sortKey = key; sortDir = key === 'name' ? 'asc' : 'desc'; }
       renderStats(app);
+    });
+  });
+  const deepSortSelect = app.querySelector('#leader-deep-sort-select');
+  if (deepSortSelect) {
+    deepSortSelect.addEventListener('change', () => {
+      if (!deepSortSelect.value) return;
+      sortKey = deepSortSelect.value;
+      sortDir = 'desc';
+      renderStats(app);
+    });
+  }
+  app.querySelectorAll('[data-action="open-player-stats"]').forEach((row) => {
+    row.addEventListener('click', () => {
+      const r = rows.find((x) => x.player.id === row.dataset.playerId);
+      if (r) openPlayerStatsModal(r, team);
     });
   });
 
@@ -422,35 +512,41 @@ function openWeekAwardModal(week, onSaved) {
   });
 }
 
+// Compact table row — just the key-stat columns (keyStatColumns above),
+// with the whole row tappable to open the full breakdown (every other
+// stat sortColumns(team) tracks) in a modal instead of needing more
+// columns than fit a phone screen.
 function leaderRowHtml(row, columns, team) {
   const belowStandard = team.minPlayingTimePercent != null && row.playingTimePercent != null
     && Math.round(row.playingTimePercent * 100) < team.minPlayingTimePercent;
-  const cellFor = {
-    apps: row.apps,
-    minutes: formatMinutes(row.minutes),
-    goals: row.goals,
-    assists: row.assists,
-    saves: row.saves,
-    yellows: row.yellows,
-    reds: row.reds,
-    potm: row.potm,
-    captaincies: row.captaincies,
-    weeklyAwards: row.weeklyAwards,
-    attendance: row.attendance == null ? '—' : formatPercent(row.attendance),
-    trainingAttendance: row.trainingAttendance == null ? '—' : formatPercent(row.trainingAttendance),
-    playingTimePercent: row.playingTimePercent == null
-      ? '—'
-      : `${belowStandard ? '⚠️ ' : ''}${formatPercent(row.playingTimePercent)}`,
-  };
   return `
-    <tr style="border-top:1px solid var(--line);">
-      <td style="padding:6px 8px;">
-        <div style="font-weight:600;">${escapeHtml(row.player.name)}</div>
+    <tr data-action="open-player-stats" data-player-id="${row.player.id}" style="border-top:1px solid var(--line); cursor:pointer;">
+      <td style="padding:8px 10px;">
+        <div style="font-weight:600;">${escapeHtml(row.player.name)}${belowStandard ? ` <span title="Below this team's ${team.minPlayingTimePercent}% minimum playing time standard (set in Settings)">⚠️</span>` : ''}</div>
         <div class="muted" style="font-size:12px;">${formatPositions(row.player)}</div>
       </td>
-      ${columns.map((c) => `<td style="text-align:right; padding:6px 8px;">${cellFor[c.key]}</td>`).join('')}
+      ${columns.map((c) => `<td style="text-align:right; padding:8px 8px; font-weight:600;">${statDisplayValue(row, c.key, team)}</td>`).join('')}
     </tr>
   `;
+}
+
+function openPlayerStatsModal(row, team) {
+  const columns = sortColumns(team);
+  openModal({
+    title: row.player.name,
+    bodyHtml: `
+      <div class="muted small mt-0" style="margin-bottom:6px;">${formatPositions(row.player)}${row.player.jerseyNumber != null ? ` · #${row.player.jerseyNumber}` : ''}</div>
+      <div class="stack" style="gap:0;">
+        ${columns.map((c) => `
+          <div class="sublog-item">
+            <span>${escapeHtml(STAT_FULL_LABELS[c.key] || c.label)}</span>
+            <strong>${statDisplayValue(row, c.key, team)}</strong>
+          </div>
+        `).join('')}
+      </div>
+      <button type="button" class="btn block" data-close-modal style="margin-top:14px;">Close</button>
+    `,
+  });
 }
 
 // One drop-down per calendar month — the most recent starts open, every
