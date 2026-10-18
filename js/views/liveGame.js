@@ -5,10 +5,10 @@ import { violatedRules } from '../rules.js';
 import { openModal, closeModal, confirmDialog, alertDialog } from '../modal.js';
 import { subPlanSectionHtml, openSubPlanEntryForm, benchDueLineHtml } from '../subPlan.js';
 import { autoFillLineup } from './gameDetail.js';
+import { squadFormatOptionsHtml } from './schedule.js';
 import { isCloudSyncConnected, syncSilently } from '../cloudSync.js';
 import { remapLiveFormation, stintSeconds, computeMatchSummary, findRemovalReason } from '../liveGameLogic.js';
 
-let selectingInboundId = null;
 let lastGameId = null;
 // Whether the Playing Time / Match Events <details> are expanded — tracked
 // here rather than left to the browser's own `open` attribute, because the
@@ -20,7 +20,6 @@ let matchEventsOpen = false;
 
 export function renderLiveGame(app, gameId) {
   if (lastGameId !== gameId) {
-    selectingInboundId = null;
     playingTimeOpen = false;
     matchEventsOpen = false;
     lastGameId = gameId;
@@ -40,7 +39,6 @@ export function renderLiveGame(app, gameId) {
   const squadFormat = gameSquadFormat(game, team);
   const targetOutfield = outfieldTargetCount(squadFormat);
   const formation = formationFor(squadFormat, game.formationId, team.customFormations || []);
-  const formationOptions = formationOptionsFor(squadFormat, team.customFormations || []);
   const hasGk = formationHasGk(formation);
   const slotByPlayerId = Object.fromEntries(
     Object.entries(game.lineup?.slots || {}).filter(([, pid]) => pid).map(([slotId, pid]) => [pid, slotId])
@@ -140,7 +138,7 @@ export function renderLiveGame(app, gameId) {
         <div class="score-team">
           <div class="label">${escapeHtml(game.opponent)}</div>
           <div class="value">${live.scoreThem}</div>
-          ${isCompleted ? '' : `<div class="score-controls"><button class="btn ghost" data-action="log-goal-them">+1</button></div>`}
+          ${isCompleted ? '' : `<div class="score-controls"><button class="btn ghost" data-action="log-goal-them">+1</button><button class="btn ghost sm" data-action="log-own-goal">😬 Own Goal</button></div>`}
         </div>
       </div>
 
@@ -181,21 +179,14 @@ export function renderLiveGame(app, gameId) {
     ${!isCompleted ? fairPlaySuggestionHtml(team, live, bench, onFieldOutfield, byId) : ''}
     ${!isCompleted ? upcomingSubsHtml(team, live, bench, onFieldOutfield) : ''}
 
-    ${!isCompleted && selectingInboundId ? `
-      <div class="banner info spread">
-        <span>🔵 Bringing on: <strong>${escapeHtml(byId[selectingInboundId]?.name || '')}</strong> — tap an on-field player to swap${onFieldOutfield.length < targetOutfield ? ', or add to an open spot' : ''}.</span>
-        <button class="btn sm ghost" data-action="cancel-sub">Cancel</button>
-      </div>
-      ${onFieldOutfield.length < targetOutfield ? `<button class="btn secondary block" data-action="add-to-pitch" style="margin-bottom:10px;">⬆ Add to Pitch (no swap)</button>` : ''}
-    ` : ''}
-
     ${!isCompleted ? `
-      <div class="section-title" style="margin-top:0;">Formation</div>
+      <div class="section-title" style="margin-top:0;">Formation &amp; Squad Size</div>
+      <div class="muted small" style="margin:0 0 6px;">Currently ${escapeHtml(formation.label)}${formation.custom ? ' (yours)' : ''}.</div>
       <div class="timer-actions" style="margin:0 0 10px;">
-        <button type="button" class="btn ghost sm" data-action="change-formation">${escapeHtml(formation.label)}${formation.custom ? ' (yours)' : ''} — change</button>
+        <button type="button" class="btn secondary sm" data-action="change-formation">✏️ Change squad size or formation</button>
         <button type="button" class="btn secondary sm" data-action="auto-fill-field" ${canAutoFillField ? '' : 'disabled'}>⚡ Auto-Fill Field</button>
       </div>
-      <div class="muted small" style="margin:0 0 8px;">Tap a pitch player to substitute.</div>
+      <div class="muted small" style="margin:0 0 8px;">Tap any player — on the pitch or the bench — to substitute, swap, or add them.</div>
       <div class="pitch-wrap">
         <div class="pitch" id="live-pitch">
           ${formation.slots.map((slot) => livePitchSlotHtml(slot, slot.role === 'GK' ? currentGk : byId[game.lineup?.slots?.[slot.id]])).join('')}
@@ -235,6 +226,10 @@ export function renderLiveGame(app, gameId) {
     <details class="card" style="margin-top:12px;" data-details-section="playing-time" ${playingTimeOpen ? 'open' : ''}>
       <summary style="cursor:pointer; font-weight:700; font-size:13px;">⏱ Playing Time</summary>
       <div style="margin-top:10px;">
+        ${!live.running && periodElapsedSeconds > 0 ? `
+          <button type="button" class="btn ghost sm" data-action="correct-clock">✂️ Correct Clock</button>
+          <p class="muted small" style="margin:4px 0 10px;">Forgot to pause or end on time? Remove the extra minutes here.</p>
+        ` : ''}
         ${playingTimeRows(active, live, presentIds)}
       </div>
     </details>
@@ -273,6 +268,7 @@ export function renderLiveGame(app, gameId) {
         g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'goal-them' });
       });
     }));
+    app.querySelectorAll('[data-action="log-own-goal"]').forEach((btn) => btn.addEventListener('click', () => openOwnGoalModal(gameId, onPitchPool)));
     app.querySelectorAll('[data-action="log-save"]').forEach((btn) => btn.addEventListener('click', () => {
       // A single tap just records the save right now, credited to whoever
       // is currently in goal — no dialog to fill in first, matching the
@@ -405,7 +401,6 @@ export function renderLiveGame(app, gameId) {
         e.stopPropagation();
         const playerId = btn.dataset.playerId;
         openRemovalModal(gameId, byId[playerId], team.enableCards);
-        if (selectingInboundId === playerId) selectingInboundId = null;
       });
     });
 
@@ -415,59 +410,21 @@ export function renderLiveGame(app, gameId) {
       });
     });
 
+    // Tapping a bench player opens the same kind of picker as tapping an
+    // on-field one does below — "bring on/swap/add" all live in one modal
+    // per player now, rather than this being a two-step "arm a pick, then
+    // tap elsewhere to complete it" flow. See the comment on
+    // openBenchSubModal for why that split flow was replaced.
     app.querySelectorAll('[data-bench-player]').forEach((el) => {
       el.addEventListener('click', () => {
         const playerId = el.dataset.benchPlayer;
-        selectingInboundId = selectingInboundId === playerId ? null : playerId;
-        renderLiveGame(app, gameId);
-      });
-    });
-
-    const cancelBtn = app.querySelector('[data-action="cancel-sub"]');
-    if (cancelBtn) cancelBtn.addEventListener('click', () => { selectingInboundId = null; renderLiveGame(app, gameId); });
-
-    const addBtn = app.querySelector('[data-action="add-to-pitch"]');
-    if (addBtn) {
-      addBtn.addEventListener('click', () => {
-        const inId = selectingInboundId;
-        const ineligible = ineligibleToBringOnReason(game, inId);
-        if (ineligible) {
-          selectingInboundId = null;
-          alertDialog(ineligible);
-          renderLiveGame(app, gameId);
-          return;
-        }
-        const inPlayer = byId[inId];
-        const inName = inPlayer?.name || '';
-        update((state) => {
-          const g = state.games.find((x) => x.id === gameId);
-          g.live.onField.push(inId);
-          g.live.stintStart = g.live.stintStart || {};
-          g.live.stintStart[inId] = g.live.elapsedSeconds;
-          g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'add', inId, inName });
-          // Filling an open spot rather than swapping — give them whichever
-          // empty formation slot matches their preferred position, falling
-          // back to any other empty non-GK slot so the pitch still shows
-          // where they are even without a role match.
-          const emptySlotIds = Object.keys(g.lineup?.slots || {}).filter((sid) => !g.lineup.slots[sid] && sid !== 'gk');
-          const preferredSlotId = emptySlotIds.find((sid) => playerPositions(inPlayer).includes(formation.slots.find((s) => s.id === sid)?.role));
-          const chosenSlotId = preferredSlotId || emptySlotIds[0];
-          if (chosenSlotId) g.lineup.slots[chosenSlotId] = inId;
-        });
-        selectingInboundId = null;
-      });
-    }
-
-    app.querySelectorAll('[data-onfield-player]').forEach((el) => {
-      el.addEventListener('click', () => {
-        if (!selectingInboundId) return;
-        applySub(gameId, selectingInboundId, el.dataset.onfieldPlayer, byId, team);
+        openBenchSubModal(gameId, playerId, byId, team, onFieldOutfield, onFieldOutfield.length < targetOutfield);
       });
     });
 
     const changeFormationBtn = app.querySelector('[data-action="change-formation"]');
     if (changeFormationBtn) {
-      changeFormationBtn.addEventListener('click', () => openFormationModal(gameId, formationOptions, formation.id));
+      changeFormationBtn.addEventListener('click', () => openFormationModal(gameId, squadFormat, formation.id, team));
     }
 
     const autoFillFieldBtn = app.querySelector('[data-action="auto-fill-field"]');
@@ -475,7 +432,12 @@ export function renderLiveGame(app, gameId) {
       autoFillFieldBtn.addEventListener('click', () => autoFillLiveField(gameId, formation));
     }
 
-    app.querySelectorAll('[data-live-pitch-slot] [data-open-sub]').forEach((chip) => {
+    // Matches both the pitch-diagram chip AND the "On Field" grid card for
+    // the same player (fieldCardHtml gives both the same data-open-sub
+    // attribute) — one listener wires up two visual representations of the
+    // identical action, so whichever one a coach taps, the result is the
+    // same picker.
+    app.querySelectorAll('[data-open-sub]').forEach((chip) => {
       chip.addEventListener('click', () => {
         const outId = chip.dataset.openSub;
         const teammates = onFieldOutfield.filter((p) => p.id !== outId);
@@ -529,6 +491,19 @@ export function renderLiveGame(app, gameId) {
     });
   });
 
+  // Correcting the clock is useful both paused mid-match and after the
+  // final whistle (forgetting to end the match bakes the overrun straight
+  // into playing time the moment End Game is finally tapped — see
+  // openClockCorrectionModal's own comment) — wired unconditionally, same
+  // reasoning as edit-sublog-entry above. Only rendered at all when the
+  // clock isn't currently running (see the button's own condition).
+  const correctClockBtn = app.querySelector('[data-action="correct-clock"]');
+  if (correctClockBtn) {
+    correctClockBtn.addEventListener('click', () => {
+      openClockCorrectionModal(gameId, live, periodElapsedSeconds, numPeriods);
+    });
+  }
+
   // Keeps the Playing Time / Match Events <details> open across the
   // once-a-second re-render the live match clock triggers — otherwise
   // opening one just had it collapse again a moment later.
@@ -561,27 +536,63 @@ export function renderLiveGame(app, gameId) {
 // out from under an open native dropdown, snapping it shut before a tap
 // could land. A modal lives outside #app (see modal.js), so it isn't
 // touched by that re-render at all.
-function openFormationModal(gameId, formationOptions, currentFormationId) {
+//
+// Covers the squad SIZE as well as the tactical shape — a grassroots
+// match doesn't always stay the format it was scheduled as (a team shows
+// up short and the game's played 6-a-side instead of 7, or a league's
+// informal fair-play rule lets the losing side bring on an extra player
+// mid-match). Changing size here picks a fresh formation for that size
+// (defaulting to its first suggestion) and remaps the live lineup the
+// same way a same-size shape change already does — see remapLiveFormation
+// — so nobody currently on the pitch is silently dropped. Growing the
+// squad just opens up new empty slot(s) to fill via the usual Auto-Fill
+// Field button or tapping the open spot; shrinking it can leave one
+// player without a mapped pitch position if the pitch is already over
+// the new target (remapLiveFormation's documented fallback) — they stay
+// on and counted, just without a drawn spot, until the coach subs or
+// benches someone to make room.
+function openFormationModal(gameId, currentSquadFormat, currentFormationId, team) {
+  const customFormations = team.customFormations || [];
   openModal({
     title: 'Change Formation',
     bodyHtml: `
       <form id="formation-form" class="stack">
         <div class="field">
+          <label>Squad size</label>
+          <select name="squadFormat">${squadFormatOptionsHtml(currentSquadFormat)}</select>
+          <p class="muted small" style="margin:4px 0 0;">Only for this match — your team's usual format (${team.squadFormat}-a-side) is unaffected. Handy when a grassroots game ends up a different size than planned, or you're adding an extra player under a fair-play rule.</p>
+        </div>
+        <div class="field">
           <label>Formation</label>
-          <select name="formationId">
-            ${formationOptions.map((f) => `<option value="${f.id}" ${f.id === currentFormationId ? 'selected' : ''}>${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('')}
+          <select name="formationId" id="formation-select">
+            ${formationOptionsFor(currentSquadFormat, customFormations).map((f) => `<option value="${f.id}" ${f.id === currentFormationId ? 'selected' : ''}>${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('')}
           </select>
         </div>
         <button type="submit" class="btn block">Apply</button>
       </form>
     `,
     onMount: (modalEl) => {
+      const sizeSelect = modalEl.querySelector('[name="squadFormat"]');
+      const formationSelect = modalEl.querySelector('#formation-select');
+      sizeSelect.addEventListener('change', () => {
+        const size = Number(sizeSelect.value);
+        formationSelect.innerHTML = formationOptionsFor(size, customFormations)
+          .map((f) => `<option value="${f.id}">${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('');
+      });
       modalEl.querySelector('#formation-form').addEventListener('submit', (e) => {
         e.preventDefault();
-        const newFormationId = new FormData(e.target).get('formationId');
+        const fd = new FormData(e.target);
+        const newSquadFormat = Number(fd.get('squadFormat')) || currentSquadFormat;
+        const newFormationId = fd.get('formationId');
         update((state) => {
           const g = state.games.find((x) => x.id === gameId);
-          const newFormation = formationFor(gameSquadFormat(g, state.team), newFormationId, state.team.customFormations || []);
+          const newFormation = formationFor(newSquadFormat, newFormationId, state.team.customFormations || []);
+          // Same inherit-vs-override convention as the Schedule form's own
+          // Format field: only stored on the game when it actually differs
+          // from the team's current default, so this match keeps tracking
+          // whatever was deliberately chosen here even if the team default
+          // changes later in Settings.
+          g.squadFormat = newSquadFormat !== state.team.squadFormat ? newSquadFormat : null;
           g.formationId = newFormationId;
           g.lineup.slots = remapLiveFormation(g.lineup.slots, g.live.onField, g.live.gkByPeriod[g.live.currentPeriod], newFormation);
         });
@@ -751,6 +762,94 @@ function swapPitchPositions(gameId, playerAId, playerBId, byId) {
   });
 }
 
+// Tapping a bench player — the mirror image of openPitchSubModal above:
+// that one starts from an on-field player and offers bench options (bring
+// on) or teammate options (swap position); this one starts from a bench
+// player and offers on-field options (sub them off) or an open spot (add,
+// no one comes off). Having both directions open the same KIND of picker,
+// rather than this side instead arming a pending pick that some other tap
+// elsewhere on screen would complete, used to let a pick armed here go
+// stale if the coach resolved things a different way (the pitch-chip
+// modal, a GK change, Auto-Fill Field) — the stale pick stayed silently
+// "live," and the next tap on any on-field card would fire it unasked.
+// Routing every substitution-starting tap through a self-contained modal
+// like this one removes that whole class of bug structurally, rather than
+// needing to remember to clear a pending pick on every other path that
+// might resolve it instead.
+function openBenchSubModal(gameId, inId, byId, team, onFieldOutfield, hasOpenSpot) {
+  const inPlayer = byId[inId];
+  if (!inPlayer) return;
+  if (!onFieldOutfield.length && !hasOpenSpot) {
+    alertDialog(`No one on the pitch to swap with, and no open spot, for ${inPlayer.name}.`);
+    return;
+  }
+  openModal({
+    title: `${escapeHtml(inPlayer.name)}`,
+    bodyHtml: `
+      <form id="bench-sub-form" class="stack">
+        <div class="field">
+          <label>${hasOpenSpot ? 'Add to an open spot, or bring on for (coming off)' : 'Bring on for (coming off)'}</label>
+          <select name="targetId" required>
+            <option value="" disabled selected>Select</option>
+            ${hasOpenSpot ? `<option value="__add__">⬆ Add to Pitch (open spot, no one comes off)</option>` : ''}
+            ${onFieldOutfield.length ? `
+              <optgroup label="Bring on for (coming off)">
+                ${onFieldOutfield.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+              </optgroup>
+            ` : ''}
+          </select>
+        </div>
+        <button type="submit" class="btn block">Confirm</button>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      modalEl.querySelector('#bench-sub-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const targetId = new FormData(e.target).get('targetId');
+        if (!targetId) return;
+        closeModal();
+        if (targetId === '__add__') {
+          addPlayerToBestOpenSlot(gameId, inId, byId);
+        } else {
+          applySub(gameId, inId, targetId, byId, team);
+        }
+      });
+    },
+  });
+}
+
+// Shared by openBenchSubModal's "Add to Pitch" option — the old inline
+// "⬆ Add to Pitch (no swap)" button's own logic, extracted so it works the
+// same way from inside a modal: no outgoing player, so none of applySub's
+// swap bookkeeping (min-stint check, squad-rule check, freeing an outgoing
+// slot) applies. Picks whichever empty formation slot matches their
+// preferred position, falling back to any other empty non-GK slot so the
+// pitch still shows where they are even without a role match.
+function addPlayerToBestOpenSlot(gameId, inId, byId) {
+  const game = findGame(gameId);
+  const ineligible = ineligibleToBringOnReason(game, inId);
+  if (ineligible) {
+    alertDialog(ineligible);
+    return;
+  }
+  const { team } = getState();
+  const squadFormat = gameSquadFormat(game, team);
+  const formation = formationFor(squadFormat, game.formationId, team.customFormations || []);
+  const inPlayer = byId[inId];
+  const inName = inPlayer?.name || '';
+  update((state) => {
+    const g = state.games.find((x) => x.id === gameId);
+    g.live.onField.push(inId);
+    g.live.stintStart = g.live.stintStart || {};
+    g.live.stintStart[inId] = g.live.elapsedSeconds;
+    g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'add', inId, inName });
+    const emptySlotIds = Object.keys(g.lineup?.slots || {}).filter((sid) => !g.lineup.slots[sid] && sid !== 'gk');
+    const preferredSlotId = emptySlotIds.find((sid) => playerPositions(inPlayer).includes(formation.slots.find((s) => s.id === sid)?.role));
+    const chosenSlotId = preferredSlotId || emptySlotIds[0];
+    if (chosenSlotId) g.lineup.slots[chosenSlotId] = inId;
+  });
+}
+
 // Tapping an EMPTY pitch spot — no swap needed, just pick who's coming
 // on straight into that exact position. Same picker pattern as tapping a
 // filled spot (openPitchSubModal above), just adding rather than swapping.
@@ -885,7 +984,6 @@ async function applySub(gameId, inId, outId, byId, team) {
     const slotId = Object.keys(g.lineup?.slots || {}).find((sid) => g.lineup.slots[sid] === outId);
     if (slotId) g.lineup.slots[slotId] = inId;
   });
-  selectingInboundId = null;
 }
 
 function goalkeeperCardHtml(team, numPeriods, live, currentGk, isCompleted) {
@@ -911,7 +1009,7 @@ function goalkeeperCardHtml(team, numPeriods, live, currentGk, isCompleted) {
 
 function matchSummaryHtml(live) {
   const s = computeMatchSummary(live);
-  const hasAnything = s.scorers.length || s.saves.length || s.openPlaySaves || s.cards.length;
+  const hasAnything = s.scorers.length || s.saves.length || s.openPlaySaves || s.cards.length || s.ownGoals || s.opponentOwnGoals;
   if (!hasAnything) return '';
 
   return `
@@ -943,6 +1041,18 @@ function matchSummaryHtml(live) {
           ${s.cards.map((c) => `
             <div class="card-row"><span class="small">${escapeHtml(c.name)}</span><span class="small">${'🟨'.repeat(c.yellow)}${'🟥'.repeat(c.red)}</span></div>
           `).join('')}
+        </div>
+      ` : ''}
+      ${s.ownGoals ? `
+        <div>
+          <div class="muted small" style="margin-bottom:4px;">😬 Own Goals</div>
+          <div class="card-row"><span class="small">${s.ownGoalPlayerNames.length ? escapeHtml(s.ownGoalPlayerNames.join(', ')) : 'Unattributed'}</span><span class="small muted">${s.ownGoals}</span></div>
+        </div>
+      ` : ''}
+      ${s.opponentOwnGoals ? `
+        <div>
+          <div class="muted small" style="margin-bottom:4px;">🙌 Opponent Own Goals</div>
+          <div class="card-row"><span class="small">${s.opponentOwnGoalNotes.length ? escapeHtml(s.opponentOwnGoalNotes.join(', ')) : 'No note'}</span><span class="small muted">${s.opponentOwnGoals}</span></div>
         </div>
       ` : ''}
     </div>
@@ -1036,7 +1146,11 @@ function upcomingSubsHtml(team, live, bench, onFieldOutfield) {
 
 function fieldCardHtml(p, live, isCompleted, isOnField, team, positionRole) {
   const seconds = live.playingTime[p.id] || 0;
-  const clickable = !isCompleted && selectingInboundId;
+  // Tappable any time the match isn't over — opens the same picker as the
+  // pitch-diagram chip for this same player (see the shared [data-open-sub]
+  // wiring in renderLiveGame), so there's exactly one way this card behaves
+  // regardless of which of the two places on screen a coach taps it.
+  const clickable = !isCompleted;
   const stint = isOnField ? stintSeconds(live, p.id) : null;
   const minStintSeconds = (team?.minStintMinutes ?? 4) * 60;
   const stintLine = isOnField
@@ -1048,7 +1162,7 @@ function fieldCardHtml(p, live, isCompleted, isOnField, team, positionRole) {
   // substitution could easily catch it by mistake.
   const cardAction = `<button type="button" class="icon-btn" style="position:absolute; top:2px; right:2px; font-size:13px; padding:4px 6px;" data-action="log-card" data-player-id="${p.id}" aria-label="${team?.enableCards ? 'Card / remove' : 'Remove from match'} ${escapeHtml(p.name)}" title="${team?.enableCards ? 'Card / Remove' : 'Remove from Match'}">⋯</button>`;
   return `
-    <div class="field-card ${clickable ? 'subbing' : ''}" style="position:relative;" ${clickable ? `data-onfield-player="${p.id}"` : ''}>
+    <div class="field-card" style="position:relative;" ${clickable ? `data-open-sub="${p.id}"` : ''}>
       <div class="row spread" style="padding-right:20px;">
         <span class="jersey">${p.jerseyNumber ?? '-'}</span>
         <span class="small muted">${positionRole ? escapeHtml(positionRole) : (isOnField ? 'On field' : 'Bench')}</span>
@@ -1063,9 +1177,8 @@ function fieldCardHtml(p, live, isCompleted, isOnField, team, positionRole) {
 
 function benchCardHtml(p, live, subPlan) {
   const seconds = live.playingTime[p.id] || 0;
-  const selected = selectingInboundId === p.id;
   return `
-    <button type="button" class="field-card ${selected ? 'selected-in' : ''}" data-bench-player="${p.id}" style="text-align:left; cursor:pointer;">
+    <button type="button" class="field-card" data-bench-player="${p.id}" style="text-align:left; cursor:pointer;">
       <div class="row spread">
         <span class="jersey">${p.jerseyNumber ?? '-'}</span>
         <span class="small muted">Bench</span>
@@ -1100,9 +1213,9 @@ function playingTimeRows(active, live, presentIds) {
 }
 
 const EVENT_ICONS = {
-  'goal-us': '⚽', 'goal-them': '🥅', save: '🧤', sub: '🔄', add: '⬆️',
+  'goal-us': '⚽', 'goal-them': '🥅', 'own-goal': '😬', 'opponent-own-goal': '🙌', save: '🧤', sub: '🔄', add: '⬆️',
   'period-start': '⏱', 'gk-change': '🧤', recovered: '↩️',
-  'position-swap': '🔃',
+  'position-swap': '🔃', 'clock-correction': '✂️',
 };
 
 // A 'send-off' entry's own reason decides its icon — an injury isn't a
@@ -1116,7 +1229,7 @@ const SEND_OFF_ICONS = { 'second yellow': '🟥', injury: '🚑', other: '🚪' 
 // boundaries) each have side effects elsewhere (who's on the pitch, who's
 // been sent off) that an edit here wouldn't reverse, so they're left
 // read-only for now.
-const EDITABLE_EVENT_TYPES = ['goal-us', 'goal-them', 'save'];
+const EDITABLE_EVENT_TYPES = ['goal-us', 'goal-them', 'save', 'own-goal', 'opponent-own-goal'];
 
 function eventRowHtml(entry, numPeriods, index) {
   const icon = entry.type === 'card' ? (entry.cardType === 'red' ? '🟥' : '🟨')
@@ -1129,6 +1242,12 @@ function eventRowHtml(entry, numPeriods, index) {
       break;
     case 'goal-them':
       label = `Goal (opponent)`;
+      break;
+    case 'own-goal':
+      label = `Own goal${entry.playerName ? ` — ${escapeHtml(entry.playerName)}` : ''}`;
+      break;
+    case 'opponent-own-goal':
+      label = `Opponent own goal${entry.note ? ` — ${escapeHtml(entry.note)}` : ''}`;
       break;
     case 'save':
       label = `GK save${entry.name ? ` — ${escapeHtml(entry.name)}` : ' (open play)'}`;
@@ -1159,6 +1278,9 @@ function eventRowHtml(entry, numPeriods, index) {
     case 'position-swap':
       label = `Swapped positions: ${escapeHtml(entry.aName)} ↔ ${escapeHtml(entry.bName)}`;
       break;
+    case 'clock-correction':
+      label = `Clock corrected: removed ${formatClock(entry.secondsRemoved)}`;
+      break;
     default:
       label = entry.type;
   }
@@ -1172,6 +1294,70 @@ function eventRowHtml(entry, numPeriods, index) {
       </span>
     </div>
   `;
+}
+
+// Reported bug: forgetting to pause or end a match lets the clock (which
+// runs off real wall-clock time — see syncRunningClocks in store.js, which
+// is what lets it catch up correctly after the screen locks or the tab
+// backgrounds) keep counting for however long it took to notice, wrongly
+// crediting that whole stretch to the match total AND to whoever was on
+// the pitch at the time. If the coach has already tapped End Game by the
+// time they notice, that one last update() call (every update() syncs the
+// running clock before applying its own change) has already baked the
+// overrun straight into playing time — which is why this is reachable on
+// a completed match too, not just a paused live one (same reasoning as
+// openEditSubLogEntryModal below).
+//
+// Scoped to the CURRENT period/half only (matching what a coach is
+// actually trying to undo — "I forgot to end this half", not the whole
+// match), and assumes no one was subbed during the overrun itself (the
+// coach simply forgot to stop the clock — nothing else happened), so the
+// time comes straight off whoever is currently on the pitch/in goal.
+function openClockCorrectionModal(gameId, live, periodElapsedSeconds, numPeriods) {
+  const maxMinutes = Math.floor(periodElapsedSeconds / 60);
+  if (maxMinutes < 1) {
+    alertDialog('Less than a minute has elapsed this half — nothing to remove yet.');
+    return;
+  }
+  openModal({
+    title: 'Correct the Clock',
+    bodyHtml: `
+      <p class="muted small mt-0">Removes time from ${periodLabel(numPeriods, live.currentPeriod)}'s clock, and from the playing time of whoever is currently on the pitch or in goal (assuming no one was subbed during the overrun itself). This can't be undone from here, so double-check the amount.</p>
+      <form id="clock-correction-form" class="stack">
+        <div class="field">
+          <label>Minutes to remove (currently ${formatClock(periodElapsedSeconds)} elapsed this half)</label>
+          <input type="number" name="minutes" min="1" max="${maxMinutes}" required />
+        </div>
+        <button type="submit" class="btn block danger">Remove Minutes</button>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      modalEl.querySelector('#clock-correction-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const minutes = Number(new FormData(e.target).get('minutes'));
+        if (!Number.isFinite(minutes) || minutes < 1) return;
+        const secondsToRemove = Math.min(minutes * 60, periodElapsedSeconds);
+        update((state) => {
+          const g = state.games.find((x) => x.id === gameId);
+          g.live.elapsedSeconds = Math.max(0, g.live.elapsedSeconds - secondsToRemove);
+          const currentGkId = g.live.gkByPeriod[g.live.currentPeriod] || null;
+          const affected = [...new Set([...(g.live.onField || []), currentGkId].filter(Boolean))];
+          g.live.playingTime = g.live.playingTime || {};
+          g.live.stintStart = g.live.stintStart || {};
+          affected.forEach((pid) => {
+            g.live.playingTime[pid] = Math.max(0, (g.live.playingTime[pid] || 0) - secondsToRemove);
+            // Defensive clamp, not expected to matter in the common case
+            // (no one subbed during the overrun) — just guards against a
+            // stint start ending up later than the now-rewound clock,
+            // which would otherwise show as a negative stint.
+            if (g.live.stintStart[pid] != null) g.live.stintStart[pid] = Math.min(g.live.stintStart[pid], g.live.elapsedSeconds);
+          });
+          g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'clock-correction', secondsRemoved: secondsToRemove });
+        });
+        closeModal();
+      });
+    },
+  });
 }
 
 // Corrects (or removes) an already-logged goal or save — unlike the pool
@@ -1283,14 +1469,101 @@ function openEditSubLogEntryModal(gameId, index, entry, pool) {
         });
       },
     });
+    return;
+  }
+
+  if (entry.type === 'own-goal') {
+    openModal({
+      title: 'Edit Own Goal',
+      bodyHtml: `
+        <form id="edit-own-goal-form" class="stack">
+          <div class="field">
+            <label>Came off (optional)</label>
+            <select name="playerId">
+              <option value="">Not sure / unattributed</option>
+              ${pool.map((p) => `<option value="${p.id}" ${p.id === entry.playerId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
+            </select>
+          </div>
+          <button type="submit" class="btn block">Save Changes</button>
+          <button type="button" class="btn danger block" data-action="delete-entry">🗑 Delete This Own Goal</button>
+        </form>
+      `,
+      onMount: (modalEl) => {
+        modalEl.querySelector('#edit-own-goal-form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          const playerId = new FormData(e.target).get('playerId') || null;
+          const player = playerId ? pool.find((p) => p.id === playerId) : null;
+          update((state) => {
+            const g = state.games.find((x) => x.id === gameId);
+            const e2 = g.live.subLog[index];
+            e2.playerId = player?.id || null;
+            e2.playerName = player?.name || '';
+          });
+          closeModal();
+        });
+        modalEl.querySelector('[data-action="delete-entry"]').addEventListener('click', async () => {
+          if (!(await confirmDialog('Delete this own goal? This also adjusts the score.', { okLabel: 'Delete', danger: true }))) return;
+          update((state) => {
+            const g = state.games.find((x) => x.id === gameId);
+            g.live.scoreThem = Math.max(0, g.live.scoreThem - 1);
+            g.live.subLog.splice(index, 1);
+          });
+          closeModal();
+        });
+      },
+    });
+    return;
+  }
+
+  if (entry.type === 'opponent-own-goal') {
+    openModal({
+      title: 'Edit Opponent Own Goal',
+      bodyHtml: `
+        <form id="edit-opp-og-form" class="stack">
+          <div class="field">
+            <label>Note (optional)</label>
+            <input type="text" name="note" value="${escapeHtml(entry.note || '')}" placeholder="e.g. their #4, deflected off a cross" />
+          </div>
+          <button type="submit" class="btn block">Save Changes</button>
+          <button type="button" class="btn danger block" data-action="delete-entry">🗑 Delete This Own Goal</button>
+        </form>
+      `,
+      onMount: (modalEl) => {
+        modalEl.querySelector('#edit-opp-og-form').addEventListener('submit', (e) => {
+          e.preventDefault();
+          const note = (new FormData(e.target).get('note') || '').trim();
+          update((state) => {
+            const g = state.games.find((x) => x.id === gameId);
+            g.live.subLog[index].note = note;
+          });
+          closeModal();
+        });
+        modalEl.querySelector('[data-action="delete-entry"]').addEventListener('click', async () => {
+          if (!(await confirmDialog('Delete this own goal? This also adjusts the score.', { okLabel: 'Delete', danger: true }))) return;
+          update((state) => {
+            const g = state.games.find((x) => x.id === gameId);
+            g.live.scoreUs = Math.max(0, g.live.scoreUs - 1);
+            g.live.subLog.splice(index, 1);
+          });
+          closeModal();
+        });
+      },
+    });
   }
 }
 
+// The scorer picker also offers "Opponent own goal" as a choice, not a
+// separate button — it belongs here because it's the same real-world
+// event as every other option in this list: our score going up. The app
+// has no opposition roster to pick a named player from (it only ever
+// tracks the other team's players conceptually, not individually), so
+// this takes a free-text note instead ("their #4") rather than a select.
+// Logged as its own event type, never 'goal-us' — crediting it to
+// whichever of OUR players happened to be picked would wrongly inflate
+// their scoring stats for a goal none of them actually scored.
+const OPPONENT_OWN_GOAL = '__opponent_own_goal__';
+
 function openGoalModal(gameId, pool) {
-  if (!pool.length) {
-    alertDialog('No one is on the pitch yet to credit with a goal.');
-    return;
-  }
   const options = (excludeId) => `<option value="">— none —</option>` + pool
     .filter((p) => p.id !== excludeId)
     .map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
@@ -1302,13 +1575,18 @@ function openGoalModal(gameId, pool) {
         <div class="field">
           <label>Who scored?</label>
           <select name="scorer" required>
-            <option value="" disabled selected>Select player</option>
+            <option value="" disabled selected>Select</option>
+            <option value="${OPPONENT_OWN_GOAL}">⚠️ Opponent own goal</option>
             ${pool.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
           </select>
         </div>
-        <div class="field">
+        <div class="field" data-assist-field>
           <label>Assist (optional)</label>
           <select name="assist">${options()}</select>
+        </div>
+        <div class="field" data-opp-og-note-field hidden>
+          <label>Note (optional)</label>
+          <input type="text" name="oppOgNote" placeholder="e.g. their #4, deflected off a cross" />
         </div>
         <button type="submit" class="btn block">Log Goal</button>
       </form>
@@ -1317,15 +1595,30 @@ function openGoalModal(gameId, pool) {
       const form = modalEl.querySelector('#goal-form');
       const scorerSelect = form.querySelector('[name="scorer"]');
       const assistSelect = form.querySelector('[name="assist"]');
+      const assistField = form.querySelector('[data-assist-field]');
+      const noteField = form.querySelector('[data-opp-og-note-field]');
       scorerSelect.addEventListener('change', () => {
-        assistSelect.innerHTML = options(scorerSelect.value);
+        const isOppOwnGoal = scorerSelect.value === OPPONENT_OWN_GOAL;
+        assistField.hidden = isOppOwnGoal;
+        noteField.hidden = !isOppOwnGoal;
+        if (!isOppOwnGoal) assistSelect.innerHTML = options(scorerSelect.value);
       });
       form.addEventListener('submit', (e) => {
         e.preventDefault();
         const fd = new FormData(form);
         const scorerId = fd.get('scorer');
-        const assistId = fd.get('assist') || null;
         if (!scorerId) return;
+        if (scorerId === OPPONENT_OWN_GOAL) {
+          const note = (fd.get('oppOgNote') || '').trim();
+          update((state) => {
+            const g = state.games.find((x) => x.id === gameId);
+            g.live.scoreUs += 1;
+            g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'opponent-own-goal', note });
+          });
+          closeModal();
+          return;
+        }
+        const assistId = fd.get('assist') || null;
         const scorer = pool.find((p) => p.id === scorerId);
         const assist = assistId ? pool.find((p) => p.id === assistId) : null;
         update((state) => {
@@ -1335,6 +1628,51 @@ function openGoalModal(gameId, pool) {
             atSeconds: g.live.elapsedSeconds, type: 'goal-us',
             scorerId, scorerName: scorer?.name || '',
             assistId: assist?.id || null, assistName: assist?.name || '',
+          });
+        });
+        closeModal();
+      });
+    },
+  });
+}
+
+// Counts for the OPPOSITION's score (same effect as the plain "+1" button),
+// but logged as its own event type rather than folded into 'goal-them' so
+// the match record and stats can always tell the two apart — most
+// importantly, this is never 'goal-us', so it can never inflate a
+// player's own scoring stats just because it's credited to someone on our
+// side. Unlike openGoalModal above, an empty pool isn't a dead end here:
+// the coach may simply not have anyone to pin it on (or not be sure who
+// touched it last), and "logged as an own goal with no one named" is
+// still more useful to the match record than refusing to let it be
+// logged at all.
+function openOwnGoalModal(gameId, pool) {
+  openModal({
+    title: 'Own Goal',
+    bodyHtml: `
+      <p class="muted small mt-0">Counts for the opposition's score. Pick which of our players it came off if you're sure — otherwise leave it unattributed.</p>
+      <form id="own-goal-form" class="stack">
+        <div class="field">
+          <label>Came off (optional)</label>
+          <select name="playerId">
+            <option value="">Not sure / unattributed</option>
+            ${pool.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
+          </select>
+        </div>
+        <button type="submit" class="btn block">Log Own Goal</button>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      modalEl.querySelector('#own-goal-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const playerId = new FormData(e.target).get('playerId') || null;
+        const player = playerId ? pool.find((p) => p.id === playerId) : null;
+        update((state) => {
+          const g = state.games.find((x) => x.id === gameId);
+          g.live.scoreThem += 1;
+          g.live.subLog.push({
+            atSeconds: g.live.elapsedSeconds, type: 'own-goal',
+            playerId: player?.id || null, playerName: player?.name || '',
           });
         });
         closeModal();
