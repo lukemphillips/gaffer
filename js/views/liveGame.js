@@ -138,7 +138,7 @@ export function renderLiveGame(app, gameId) {
         <div class="score-team">
           <div class="label">${escapeHtml(game.opponent)}</div>
           <div class="value">${live.scoreThem}</div>
-          ${isCompleted ? '' : `<div class="score-controls"><button class="btn ghost" data-action="log-goal-them">+1</button><button class="btn ghost sm" data-action="log-own-goal">😬 Own Goal</button></div>`}
+          ${isCompleted ? '' : `<div class="score-controls"><button class="btn ghost" data-action="log-goal-them">+1</button></div>`}
         </div>
       </div>
 
@@ -268,7 +268,6 @@ export function renderLiveGame(app, gameId) {
         g.live.subLog.push({ atSeconds: g.live.elapsedSeconds, type: 'goal-them' });
       });
     }));
-    app.querySelectorAll('[data-action="log-own-goal"]').forEach((btn) => btn.addEventListener('click', () => openOwnGoalModal(gameId, onPitchPool)));
     app.querySelectorAll('[data-action="log-save"]').forEach((btn) => btn.addEventListener('click', () => {
       // A single tap just records the save right now, credited to whoever
       // is currently in goal — no dialog to fill in first, matching the
@@ -546,13 +545,20 @@ export function renderLiveGame(app, gameId) {
 // same way a same-size shape change already does — see remapLiveFormation
 // — so nobody currently on the pitch is silently dropped. Growing the
 // squad just opens up new empty slot(s) to fill via the usual Auto-Fill
-// Field button or tapping the open spot; shrinking it can leave one
-// player without a mapped pitch position if the pitch is already over
-// the new target (remapLiveFormation's documented fallback) — they stay
-// on and counted, just without a drawn spot, until the coach subs or
-// benches someone to make room.
+// Field button or tapping the open spot. Shrinking it below how many are
+// currently on the pitch asks right here who should come off — exactly
+// enough to fit the new size — rather than leaving someone on with no
+// mapped pitch position and expecting the coach to separately sub or
+// bench them afterward. Whoever comes off goes back to the bench, not
+// sent off — they're still eligible to come back on normally.
 function openFormationModal(gameId, currentSquadFormat, currentFormationId, team) {
   const customFormations = team.customFormations || [];
+  const game = findGame(gameId);
+  const { players } = getState();
+  const byId = Object.fromEntries(players.map((p) => [p.id, p]));
+  const currentGkId = game.live.gkByPeriod[game.live.currentPeriod] || null;
+  const onPitchIds = currentGkId ? [...game.live.onField, currentGkId] : [...game.live.onField];
+
   openModal({
     title: 'Change Formation',
     bodyHtml: `
@@ -568,24 +574,78 @@ function openFormationModal(gameId, currentSquadFormat, currentFormationId, team
             ${formationOptionsFor(currentSquadFormat, customFormations).map((f) => `<option value="${f.id}" ${f.id === currentFormationId ? 'selected' : ''}>${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('')}
           </select>
         </div>
+        <div data-remove-field hidden>
+          <label>Who comes off to fit the new size?</label>
+          <p class="muted small" data-remove-hint style="margin:4px 0 8px;"></p>
+          <div data-remove-list class="stack"></div>
+        </div>
         <button type="submit" class="btn block">Apply</button>
       </form>
     `,
     onMount: (modalEl) => {
       const sizeSelect = modalEl.querySelector('[name="squadFormat"]');
       const formationSelect = modalEl.querySelector('#formation-select');
+      const removeField = modalEl.querySelector('[data-remove-field]');
+      const removeHint = modalEl.querySelector('[data-remove-hint]');
+      const removeList = modalEl.querySelector('[data-remove-list]');
+      const submitBtn = modalEl.querySelector('#formation-form button[type="submit"]');
+
+      function overflowCount() {
+        const newFormation = formationFor(Number(sizeSelect.value), formationSelect.value, customFormations);
+        return Math.max(0, onPitchIds.length - newFormation.slots.length);
+      }
+
+      function updateSubmitState() {
+        const overflow = overflowCount();
+        if (overflow <= 0) { submitBtn.disabled = false; return; }
+        const checked = removeList.querySelectorAll('input[type="checkbox"]:checked').length;
+        submitBtn.disabled = checked !== overflow;
+      }
+
+      function renderRemoveSection() {
+        const overflow = overflowCount();
+        if (overflow <= 0) {
+          removeField.hidden = true;
+          removeList.innerHTML = '';
+          submitBtn.disabled = false;
+          return;
+        }
+        removeField.hidden = false;
+        removeHint.textContent = `The new size fits ${onPitchIds.length - overflow} on the pitch — pick exactly ${overflow} to come off. They'll go back to the bench, not out of the match.`;
+        removeList.innerHTML = onPitchIds.map((id) => `
+          <label class="checkbox-row">
+            <input type="checkbox" name="removePlayer" value="${id}" />
+            ${escapeHtml(byId[id]?.name || 'Unknown')}${id === currentGkId ? ' (GK)' : ''}
+          </label>
+        `).join('');
+        removeList.querySelectorAll('input[type="checkbox"]').forEach((cb) => cb.addEventListener('change', updateSubmitState));
+        updateSubmitState();
+      }
+
       sizeSelect.addEventListener('change', () => {
         const size = Number(sizeSelect.value);
         formationSelect.innerHTML = formationOptionsFor(size, customFormations)
           .map((f) => `<option value="${f.id}">${escapeHtml(f.label)}${f.custom ? ' (yours)' : ''}</option>`).join('');
+        renderRemoveSection();
       });
+      formationSelect.addEventListener('change', renderRemoveSection);
+      renderRemoveSection();
+
       modalEl.querySelector('#formation-form').addEventListener('submit', (e) => {
         e.preventDefault();
         const fd = new FormData(e.target);
         const newSquadFormat = Number(fd.get('squadFormat')) || currentSquadFormat;
         const newFormationId = fd.get('formationId');
+        const removeIds = fd.getAll('removePlayer');
         update((state) => {
           const g = state.games.find((x) => x.id === gameId);
+          removeIds.forEach((pid) => {
+            g.live.onField = g.live.onField.filter((id) => id !== pid);
+            if (g.live.gkByPeriod[g.live.currentPeriod] === pid) g.live.gkByPeriod[g.live.currentPeriod] = null;
+            Object.keys(g.lineup?.slots || {}).forEach((sid) => {
+              if (g.lineup.slots[sid] === pid) g.lineup.slots[sid] = null;
+            });
+          });
           const newFormation = formationFor(newSquadFormat, newFormationId, state.team.customFormations || []);
           // Same inherit-vs-override convention as the Schedule form's own
           // Format field: only stored on the game when it actually differs
@@ -1009,7 +1069,7 @@ function goalkeeperCardHtml(team, numPeriods, live, currentGk, isCompleted) {
 
 function matchSummaryHtml(live) {
   const s = computeMatchSummary(live);
-  const hasAnything = s.scorers.length || s.saves.length || s.openPlaySaves || s.cards.length || s.ownGoals || s.opponentOwnGoals;
+  const hasAnything = s.scorers.length || s.saves.length || s.openPlaySaves || s.cards.length || s.opponentOwnGoals;
   if (!hasAnything) return '';
 
   return `
@@ -1041,12 +1101,6 @@ function matchSummaryHtml(live) {
           ${s.cards.map((c) => `
             <div class="card-row"><span class="small">${escapeHtml(c.name)}</span><span class="small">${'🟨'.repeat(c.yellow)}${'🟥'.repeat(c.red)}</span></div>
           `).join('')}
-        </div>
-      ` : ''}
-      ${s.ownGoals ? `
-        <div>
-          <div class="muted small" style="margin-bottom:4px;">😬 Own Goals</div>
-          <div class="card-row"><span class="small">${s.ownGoalPlayerNames.length ? escapeHtml(s.ownGoalPlayerNames.join(', ')) : 'Unattributed'}</span><span class="small muted">${s.ownGoals}</span></div>
         </div>
       ` : ''}
       ${s.opponentOwnGoals ? `
@@ -1213,7 +1267,7 @@ function playingTimeRows(active, live, presentIds) {
 }
 
 const EVENT_ICONS = {
-  'goal-us': '⚽', 'goal-them': '🥅', 'own-goal': '😬', 'opponent-own-goal': '🙌', save: '🧤', sub: '🔄', add: '⬆️',
+  'goal-us': '⚽', 'goal-them': '🥅', 'opponent-own-goal': '🙌', save: '🧤', sub: '🔄', add: '⬆️',
   'period-start': '⏱', 'gk-change': '🧤', recovered: '↩️',
   'position-swap': '🔃', 'clock-correction': '✂️',
 };
@@ -1229,7 +1283,7 @@ const SEND_OFF_ICONS = { 'second yellow': '🟥', injury: '🚑', other: '🚪' 
 // boundaries) each have side effects elsewhere (who's on the pitch, who's
 // been sent off) that an edit here wouldn't reverse, so they're left
 // read-only for now.
-const EDITABLE_EVENT_TYPES = ['goal-us', 'goal-them', 'save', 'own-goal', 'opponent-own-goal'];
+const EDITABLE_EVENT_TYPES = ['goal-us', 'goal-them', 'save', 'opponent-own-goal'];
 
 function eventRowHtml(entry, numPeriods, index) {
   const icon = entry.type === 'card' ? (entry.cardType === 'red' ? '🟥' : '🟨')
@@ -1242,9 +1296,6 @@ function eventRowHtml(entry, numPeriods, index) {
       break;
     case 'goal-them':
       label = `Goal (opponent)`;
-      break;
-    case 'own-goal':
-      label = `Own goal${entry.playerName ? ` — ${escapeHtml(entry.playerName)}` : ''}`;
       break;
     case 'opponent-own-goal':
       label = `Opponent own goal${entry.note ? ` — ${escapeHtml(entry.note)}` : ''}`;
@@ -1472,49 +1523,6 @@ function openEditSubLogEntryModal(gameId, index, entry, pool) {
     return;
   }
 
-  if (entry.type === 'own-goal') {
-    openModal({
-      title: 'Edit Own Goal',
-      bodyHtml: `
-        <form id="edit-own-goal-form" class="stack">
-          <div class="field">
-            <label>Came off (optional)</label>
-            <select name="playerId">
-              <option value="">Not sure / unattributed</option>
-              ${pool.map((p) => `<option value="${p.id}" ${p.id === entry.playerId ? 'selected' : ''}>${escapeHtml(p.name)}</option>`).join('')}
-            </select>
-          </div>
-          <button type="submit" class="btn block">Save Changes</button>
-          <button type="button" class="btn danger block" data-action="delete-entry">🗑 Delete This Own Goal</button>
-        </form>
-      `,
-      onMount: (modalEl) => {
-        modalEl.querySelector('#edit-own-goal-form').addEventListener('submit', (e) => {
-          e.preventDefault();
-          const playerId = new FormData(e.target).get('playerId') || null;
-          const player = playerId ? pool.find((p) => p.id === playerId) : null;
-          update((state) => {
-            const g = state.games.find((x) => x.id === gameId);
-            const e2 = g.live.subLog[index];
-            e2.playerId = player?.id || null;
-            e2.playerName = player?.name || '';
-          });
-          closeModal();
-        });
-        modalEl.querySelector('[data-action="delete-entry"]').addEventListener('click', async () => {
-          if (!(await confirmDialog('Delete this own goal? This also adjusts the score.', { okLabel: 'Delete', danger: true }))) return;
-          update((state) => {
-            const g = state.games.find((x) => x.id === gameId);
-            g.live.scoreThem = Math.max(0, g.live.scoreThem - 1);
-            g.live.subLog.splice(index, 1);
-          });
-          closeModal();
-        });
-      },
-    });
-    return;
-  }
-
   if (entry.type === 'opponent-own-goal') {
     openModal({
       title: 'Edit Opponent Own Goal',
@@ -1628,51 +1636,6 @@ function openGoalModal(gameId, pool) {
             atSeconds: g.live.elapsedSeconds, type: 'goal-us',
             scorerId, scorerName: scorer?.name || '',
             assistId: assist?.id || null, assistName: assist?.name || '',
-          });
-        });
-        closeModal();
-      });
-    },
-  });
-}
-
-// Counts for the OPPOSITION's score (same effect as the plain "+1" button),
-// but logged as its own event type rather than folded into 'goal-them' so
-// the match record and stats can always tell the two apart — most
-// importantly, this is never 'goal-us', so it can never inflate a
-// player's own scoring stats just because it's credited to someone on our
-// side. Unlike openGoalModal above, an empty pool isn't a dead end here:
-// the coach may simply not have anyone to pin it on (or not be sure who
-// touched it last), and "logged as an own goal with no one named" is
-// still more useful to the match record than refusing to let it be
-// logged at all.
-function openOwnGoalModal(gameId, pool) {
-  openModal({
-    title: 'Own Goal',
-    bodyHtml: `
-      <p class="muted small mt-0">Counts for the opposition's score. Pick which of our players it came off if you're sure — otherwise leave it unattributed.</p>
-      <form id="own-goal-form" class="stack">
-        <div class="field">
-          <label>Came off (optional)</label>
-          <select name="playerId">
-            <option value="">Not sure / unattributed</option>
-            ${pool.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}
-          </select>
-        </div>
-        <button type="submit" class="btn block">Log Own Goal</button>
-      </form>
-    `,
-    onMount: (modalEl) => {
-      modalEl.querySelector('#own-goal-form').addEventListener('submit', (e) => {
-        e.preventDefault();
-        const playerId = new FormData(e.target).get('playerId') || null;
-        const player = playerId ? pool.find((p) => p.id === playerId) : null;
-        update((state) => {
-          const g = state.games.find((x) => x.id === gameId);
-          g.live.scoreThem += 1;
-          g.live.subLog.push({
-            atSeconds: g.live.elapsedSeconds, type: 'own-goal',
-            playerId: player?.id || null, playerName: player?.name || '',
           });
         });
         closeModal();
