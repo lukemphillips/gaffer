@@ -22,30 +22,9 @@ function touchGame(state, id) {
 
 const RSVP_OPTIONS = [
   { key: 'yes', label: 'In', icon: '✅' },
-  { key: 'maybe', label: 'Maybe', icon: '❓' },
   { key: 'no', label: 'Out', icon: '❌' },
 ];
 
-const RSVP_BADGE = {
-  yes: { cls: 'yes', icon: '✅', label: 'RSVP: In' },
-  maybe: { cls: 'maybe', icon: '❓', label: 'RSVP: Maybe' },
-  no: { cls: 'no', icon: '❌', label: 'RSVP: Out' },
-  pending: { cls: 'pending', icon: '⏳', label: 'RSVP: Pending' },
-};
-
-function rsvpBadgeHtml(status) {
-  const b = RSVP_BADGE[status || 'pending'];
-  return `<span class="badge ${b.cls}" title="${b.label}">${b.icon}</span>`;
-}
-
-function attendanceChipHtml(p, isPresent, rsvpStatus) {
-  return `
-    <button type="button" class="bench-chip ${isPresent ? 'picking' : ''}" data-attendance-toggle="${p.id}">
-      <span class="jersey">${p.jerseyNumber ?? '-'}</span>
-      ${escapeHtml(p.name)} ${isPresent ? '✅' : '⚪'} ${rsvpStatus && rsvpStatus !== 'pending' ? rsvpBadgeHtml(rsvpStatus) : ''}
-    </button>
-  `;
-}
 
 // Other games on the same date — used to confirm a match day opponent
 // was actually added (rather than the coach just seeing the same "+ Add"
@@ -128,7 +107,7 @@ function openHonoreeModal(game, { field, title, label }) {
   });
 }
 
-export function renderGameDetail(app, gameId, tab) {
+export function renderGameDetail(app, gameId) {
   const game = findGame(gameId);
   if (!game) {
     app.innerHTML = '<p class="empty">Game not found. <a href="#/schedule">Back to schedule</a></p>';
@@ -168,11 +147,6 @@ export function renderGameDetail(app, gameId, tab) {
 
     ${statusBanner(game)}
 
-    <div class="tabs">
-      <a class="tab ${tab === 'rsvp' ? 'active' : ''}" href="#/game/${game.id}/rsvp">RSVP</a>
-      <a class="tab ${tab === 'lineup' ? 'active' : ''}" href="#/game/${game.id}/lineup">Squad</a>
-    </div>
-
     <div id="tab-content"></div>
   `;
 
@@ -199,8 +173,7 @@ export function renderGameDetail(app, gameId, tab) {
   if (summaryBtn) summaryBtn.addEventListener('click', () => { location.hash = `#/game/${game.id}/live`; });
 
   const content = app.querySelector('#tab-content');
-  if (tab === 'lineup') renderSquadTab(content, game);
-  else renderRsvpTab(content, game);
+  renderSquadTab(content, game);
 }
 
 function statusBanner(game) {
@@ -223,52 +196,29 @@ function statusBanner(game) {
   return '';
 }
 
-function renderRsvpTab(container, game) {
-  const { players } = getState();
-  const active = matchEligiblePlayers(players);
-  const counts = { yes: 0, no: 0, maybe: 0, pending: 0 };
-  active.forEach((p) => { counts[game.rsvps[p.id] || 'pending']++; });
-
-  const presentIds = new Set(game.presentIds || []);
-
-  container.innerHTML = `
-    <div class="banner info">Optional — use this if you're collecting availability ahead of time. On the Squad tab, "Use RSVP List" marks everyone who's In as present in one tap — attendance still tracks separately, so you can see who actually showed vs. who said they would.</div>
-    <div class="rsvp-summary card">
-      <span>✅ ${counts.yes} in</span>
-      <span>❓ ${counts.maybe} maybe</span>
-      <span>❌ ${counts.no} out</span>
-      <span>⏳ ${counts.pending} pending</span>
-    </div>
-    <div class="card">
-      ${active.length ? active.map((p) => rsvpRow(game, p, presentIds.has(p.id))).join('') : '<div class="empty">No active players on the roster.</div>'}
-    </div>
-    ${counts.yes ? `<a class="btn ghost sm block" href="#/balance/${game.id}" style="margin-top:12px;">🎲 Balance Teams from RSVPs</a>` : ''}
-  `;
-
-  container.querySelectorAll('[data-rsvp-btn]').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const { playerId, value } = btn.dataset;
-      update((state) => {
-        const g = touchGame(state, game.id);
-        g.rsvps[playerId] = value;
-      });
-    });
-  });
-}
-
-function rsvpRow(game, p, isPresent) {
+// One tap per player sets BOTH their status and whether they're present —
+// "In" marks them present and ready for the lineup below, "Out" keeps
+// them off it, with no separate attendance step. Used to be two things a
+// coach had to keep in sync themselves: a whole separate RSVP tab (for
+// planning ahead of matchday) and the Squad tab's own, different
+// attendance toggle (for who actually showed) — confusing to have two
+// different controls that both answered "is this person playing", so
+// this is the one place that sets both at once. A third "Maybe" choice
+// used to sit between them but did nothing a coach could act on
+// differently from Out, so it's gone — just the two real outcomes.
+function squadStatusRowHtml(game, p) {
   const current = game.rsvps[p.id] || 'pending';
   return `
     <div class="player-row">
       <div class="jersey">${p.jerseyNumber ?? '-'}</div>
       <div class="player-meta">
         <div class="player-name">${escapeHtml(p.name)}</div>
-        <div class="player-sub">${formatPositions(p)}${isPresent ? ' · ✅ marked present' : ''}</div>
+        <div class="player-sub">${formatPositions(p)}</div>
       </div>
       <div class="rsvp-group">
         ${RSVP_OPTIONS.map((opt) => `
           <button type="button" class="rsvp-btn ${opt.key} ${current === opt.key ? 'active' : ''}"
-            data-rsvp-btn data-player-id="${p.id}" data-value="${opt.key}" aria-label="${opt.label}">${opt.icon}</button>
+            data-squad-status-btn data-player-id="${p.id}" data-value="${opt.key}" aria-label="${opt.label}">${opt.icon}</button>
         `).join('')}
       </div>
     </div>
@@ -281,7 +231,6 @@ function renderSquadTab(container, game) {
   const presentIds = new Set(game.presentIds || []);
   const present = active.filter((p) => presentIds.has(p.id));
   const absent = active.filter((p) => !presentIds.has(p.id));
-  const rsvpYes = active.filter((p) => game.rsvps?.[p.id] === 'yes');
 
   if (game.status === 'live') return renderLiveSquadTab(container, game, active, present, absent);
   if (game.status === 'completed') return renderCompletedSquadTab(container, present, absent);
@@ -310,20 +259,26 @@ function renderSquadTab(container, game) {
     <div class="card" style="margin-top:0;">
       <div class="spread">
         <div>
-          <div style="font-weight:700;">Who's here today?</div>
-          <div class="small muted" style="margin-top:2px;">${present.length}/${active.length} present${rsvpYes.length ? ` · ${rsvpYes.length} RSVP'd In` : ''}</div>
+          <div style="font-weight:700;">Who's playing?</div>
+          <div class="small muted" style="margin-top:2px;">${present.length}/${active.length} present</div>
         </div>
-        <button class="btn ghost sm" data-action="open-attendance">✏️ Edit Individually</button>
       </div>
+      <div class="muted small" style="margin-top:6px;">Tap In/Out for each player below — In marks them present and ready for the lineup, right away. Set this as early or as late as you like; there's nothing else to do once someone's In.</div>
       <div class="row" style="gap:8px; margin-top:10px; flex-wrap:wrap;">
-        <button class="btn secondary sm" data-action="mark-all-present">Mark All Present</button>
-        <button class="btn ghost sm" data-action="use-rsvp-list" ${rsvpYes.length ? '' : 'disabled'}>✅ Use RSVP List</button>
+        <button class="btn secondary sm" data-action="mark-all-present">Mark All In</button>
         <button class="btn ghost sm" data-action="add-fill-in">+ Fill-In Player</button>
       </div>
+    </div>
+    <div class="card" style="margin-top:16px;">
+      ${active.length ? active.map((p) => squadStatusRowHtml(game, p)).join('') : '<div class="empty">No active players on the roster.</div>'}
     </div>
     ${present.length ? `<a class="btn ghost sm" href="#/balance/${game.id}" style="margin:10px 0; display:inline-flex;">🎲 Balance Teams from today's squad</a>` : ''}
 
     <div class="card" style="margin-top:16px;">
+      <div class="spread" style="gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+        <span class="small muted">Squad size: <strong>${squadFormat}-a-side</strong></span>
+        <button type="button" class="btn ghost sm" data-action="change-squad-size">Change</button>
+      </div>
       <div class="spread" style="gap:10px; flex-wrap:wrap;">
         <div class="field" style="margin:0; flex:1 1 180px;">
           <label class="small muted" style="margin-bottom:2px;">Formation</label>
@@ -363,31 +318,38 @@ function renderSquadTab(container, game) {
         <button class="btn ghost sm block" data-action="open-sub-plan" style="margin-top:10px;">${subPlanCount ? 'Manage Plan' : '+ Add Planned Sub'}</button>
       </div>
     ` : ''}
-
-    ${absent.length ? `<div class="muted small" style="margin-top:16px;">Not here: ${absent.map((p) => escapeHtml(p.name)).join(', ')}</div>` : ''}
   `;
-
-  container.querySelector('[data-action="open-attendance"]').addEventListener('click', () => {
-    openAttendanceModal(game);
-  });
 
   container.querySelector('[data-action="mark-all-present"]').addEventListener('click', () => {
     update((state) => {
       const g = touchGame(state, game.id);
-      g.presentIds = matchEligiblePlayers(state.players).map((p) => p.id);
+      const ids = matchEligiblePlayers(state.players).map((p) => p.id);
+      ids.forEach((id) => { g.rsvps[id] = 'yes'; });
+      g.presentIds = ids;
     });
   });
 
-  const useRsvpBtn = container.querySelector('[data-action="use-rsvp-list"]');
-  if (useRsvpBtn) {
-    useRsvpBtn.addEventListener('click', () => {
+  container.querySelectorAll('[data-squad-status-btn]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const { playerId, value } = btn.dataset;
       update((state) => {
         const g = touchGame(state, game.id);
-        const rsvpYesIds = matchEligiblePlayers(state.players).filter((p) => g.rsvps?.[p.id] === 'yes').map((p) => p.id);
-        g.presentIds = [...new Set([...(g.presentIds || []), ...rsvpYesIds])];
+        g.rsvps[playerId] = value;
+        const set = new Set(g.presentIds || []);
+        if (value === 'yes') {
+          set.add(playerId);
+        } else {
+          set.delete(playerId);
+          // Same behavior the old separate attendance toggle already had —
+          // no longer present means no longer holding a pitch spot either.
+          Object.keys(g.lineup?.slots || {}).forEach((sid) => {
+            if (g.lineup.slots[sid] === playerId) g.lineup.slots[sid] = null;
+          });
+        }
+        g.presentIds = [...set];
       });
     });
-  }
+  });
 
   const openSubPlanBtn = container.querySelector('[data-action="open-sub-plan"]');
   if (openSubPlanBtn) {
@@ -395,6 +357,8 @@ function renderSquadTab(container, game) {
   }
 
   container.querySelector('[data-action="add-fill-in"]').addEventListener('click', () => openAddFillInPlayerModal(game));
+
+  container.querySelector('[data-action="change-squad-size"]').addEventListener('click', () => openSquadSizeModal(game));
 
   container.querySelector('#formation-select').addEventListener('change', (e) => {
     const newFormationId = e.target.value;
@@ -580,88 +544,7 @@ function openApplySquadModal(sourceGame, candidateGames) {
   });
 }
 
-// Attendance now lives in its own modal rather than an inline collapsible
-// section — a modal's own DOM isn't touched when the Squad tab re-renders
-// itself (which happens after nearly every lineup action), so there's
-// nothing to accidentally pop back open the way the collapsed section it
-// replaced sometimes did. Re-reads the game fresh on every redraw, since
-// toggling a player goes through the normal update()/touchGame() path
-// and nothing else re-renders this modal's own contents for it.
-function openAttendanceModal(gameRef) {
-  openModal({
-    title: "Who's here today?",
-    bodyHtml: `
-      <div id="attendance-modal-body"></div>
-      <div class="modal-actions">
-        <button type="button" class="btn block" data-close-modal>Done</button>
-      </div>
-    `,
-    onMount: (modalEl) => renderBody(modalEl),
-  });
-
-  function renderBody(modalEl) {
-    const game = findGame(gameRef.id);
-    const { players } = getState();
-    const active = matchEligiblePlayers(players);
-    const presentIds = new Set(game.presentIds || []);
-    const rsvpYes = active.filter((p) => game.rsvps?.[p.id] === 'yes');
-    const bodyEl = modalEl.querySelector('#attendance-modal-body');
-    bodyEl.innerHTML = `
-      <div class="spread" style="margin-bottom:10px;">
-        <span class="muted small">${presentIds.size}/${active.length} present${rsvpYes.length ? ` · ${rsvpYes.length} RSVP'd In` : ''}</span>
-        <div class="row" style="gap:8px;">
-          <button class="btn secondary sm" data-action="use-rsvp-list" ${rsvpYes.length ? '' : 'disabled'}>✅ Use RSVP List</button>
-          <button class="btn ghost sm" data-action="mark-all-present">Mark All Present</button>
-        </div>
-      </div>
-      <div class="player-grid">
-        ${active.length ? active.map((p) => attendanceChipHtml(p, presentIds.has(p.id), game.rsvps?.[p.id])).join('') : '<span class="muted small">No active players on the roster.</span>'}
-      </div>
-    `;
-
-    bodyEl.querySelector('[data-action="mark-all-present"]').addEventListener('click', () => {
-      update((state) => {
-        const g = touchGame(state, game.id);
-        g.presentIds = matchEligiblePlayers(state.players).map((p) => p.id);
-      });
-      renderBody(modalEl);
-    });
-
-    const useRsvpBtn = bodyEl.querySelector('[data-action="use-rsvp-list"]');
-    if (useRsvpBtn) {
-      useRsvpBtn.addEventListener('click', () => {
-        update((state) => {
-          const g = touchGame(state, game.id);
-          const rsvpYesIds = matchEligiblePlayers(state.players).filter((p) => g.rsvps?.[p.id] === 'yes').map((p) => p.id);
-          g.presentIds = [...new Set([...(g.presentIds || []), ...rsvpYesIds])];
-        });
-        renderBody(modalEl);
-      });
-    }
-
-    bodyEl.querySelectorAll('[data-attendance-toggle]').forEach((el) => {
-      el.addEventListener('click', () => {
-        const playerId = el.dataset.attendanceToggle;
-        update((state) => {
-          const g = touchGame(state, game.id);
-          const set = new Set(g.presentIds || []);
-          if (set.has(playerId)) {
-            set.delete(playerId);
-            Object.keys(g.lineup.slots).forEach((sid) => {
-              if (g.lineup.slots[sid] === playerId) g.lineup.slots[sid] = null;
-            });
-          } else {
-            set.add(playerId);
-          }
-          g.presentIds = [...set];
-        });
-        renderBody(modalEl);
-      });
-    });
-  }
-}
-
-// Same reasoning as the attendance modal above, applied to the
+// Same reasoning as the old attendance modal used to be, applied to the
 // Substitution Plan. Opening a single entry (openSubPlanEntryForm, in
 // subPlan.js) uses its own modal, which replaces this one — openModal
 // always closes whatever's currently open — so onSave/onDelete below
@@ -805,6 +688,22 @@ function openAddFillInPlayerModal(game) {
         if (!name) return;
         const jerseyNumber = fd.get('jerseyNumber') ? Number(fd.get('jerseyNumber')) : null;
 
+        // Advisory-only name check — catches a coach typing a quick first
+        // name for someone who's actually already on the roster (meant to
+        // just mark them present) rather than genuinely adding a new
+        // person, which otherwise silently creates a duplicate. Checks
+        // both an exact full-name match and a first-name-only match,
+        // case-insensitive.
+        const typedLower = name.toLowerCase();
+        const existingMatch = matchEligiblePlayers(getState().players).find((pl) => {
+          const plLower = pl.name.trim().toLowerCase();
+          return plLower === typedLower || plLower.split(/\s+/)[0] === typedLower;
+        });
+        if (existingMatch) {
+          const proceed = await confirmDialog(`${existingMatch.name} is already on your roster. If that's who you mean, close this and mark them present from the Squad tab instead — don't add them again here. Add "${name}" as a separate, brand-new player anyway?`, { okLabel: 'Add Anyway, Different Person' });
+          if (!proceed) return;
+        }
+
         // Same advisory-only dupe check as the full Roster "Add Player"
         // form — an easy sideline typo otherwise saves silently and only
         // surfaces confusion later, on the lineup or in the live match.
@@ -824,6 +723,9 @@ function openAddFillInPlayerModal(game) {
           });
           const g = touchGame(state, game.id);
           g.presentIds = [...new Set([...(g.presentIds || []), id])];
+          // Keeps them consistent with the merged In/Out control above —
+          // they're present, so their status reads as In too.
+          g.rsvps[id] = 'yes';
         });
         closeModal();
       });
@@ -972,6 +874,53 @@ async function startGame(game) {
   location.hash = `#/game/${game.id}/live`;
 }
 
+// Shared by the Edit Game modal's own Format field and the Squad tab's
+// "Change" shortcut below, so the two paths to the same change can't drift.
+function applySquadFormatChange(g, team, newSquadFormat) {
+  if (newSquadFormat === gameSquadFormat(g, team)) return;
+  // null (rather than the team's own current default) so this game keeps
+  // inheriting — and reshaping alongside — the team default if that's
+  // changed later in Settings, same as a game that was never given its
+  // own override at all.
+  g.squadFormat = newSquadFormat === team.squadFormat ? null : newSquadFormat;
+  g.formationId = null;
+  const newFormation = formationFor(newSquadFormat, null, team.customFormations || []);
+  g.lineup.slots = remapLineupToFormat(g.lineup.slots, newFormation);
+}
+
+// A quick path to the same Format field the Edit Game modal already has —
+// surfaced right on the Squad tab (where a coach is actually picking who's
+// playing) instead of only behind the ✏️ edit icon, since that's where the
+// need to change squad size for this match actually comes up.
+function openSquadSizeModal(game) {
+  const { team } = getState();
+  const currentFormat = gameSquadFormat(game, team);
+  openModal({
+    title: 'Squad Size',
+    bodyHtml: `
+      <form id="squad-size-form" class="stack">
+        <div class="field">
+          <label>Format</label>
+          <select name="squadFormat">${squadFormatOptionsHtml(currentFormat)}</select>
+          <p class="muted small" style="margin:4px 0 0;">Only for this match — your team's usual format (${team.squadFormat}-a-side) is unaffected. Switches to that size's default formation; worth a check on the pitch layout below afterward.</p>
+        </div>
+        <button type="submit" class="btn block">Save</button>
+      </form>
+    `,
+    onMount: (modalEl) => {
+      modalEl.querySelector('#squad-size-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const newSquadFormat = Number(new FormData(e.target).get('squadFormat')) || currentFormat;
+        update((state) => {
+          const g = touchGame(state, game.id);
+          applySquadFormatChange(g, state.team, newSquadFormat);
+        });
+        closeModal();
+      });
+    },
+  });
+}
+
 function openEditGameForm(game) {
   openModal({
     title: 'Edit Game',
@@ -1072,17 +1021,7 @@ function openEditGameForm(game) {
           if (fd.has('periodMinutes')) g.periodMinutes = Number(fd.get('periodMinutes')) || g.periodMinutes;
           if (fd.has('numPeriods')) g.numPeriods = Number(fd.get('numPeriods')) || g.numPeriods;
           if (fd.has('squadFormat')) {
-            const newSquadFormat = Number(fd.get('squadFormat')) || gameSquadFormat(g, state.team);
-            if (newSquadFormat !== gameSquadFormat(g, state.team)) {
-              // null (rather than the team's own current default) so this
-              // game keeps inheriting — and reshaping alongside — the team
-              // default if that's changed later in Settings, same as a
-              // game that was never given its own override at all.
-              g.squadFormat = newSquadFormat === state.team.squadFormat ? null : newSquadFormat;
-              g.formationId = null;
-              const newFormation = formationFor(newSquadFormat, null, state.team.customFormations || []);
-              g.lineup.slots = remapLineupToFormat(g.lineup.slots, newFormation);
-            }
+            applySquadFormatChange(g, state.team, Number(fd.get('squadFormat')) || gameSquadFormat(g, state.team));
           }
         });
         closeModal();
