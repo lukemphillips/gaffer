@@ -333,24 +333,20 @@ function goalkeeperStatsHtml() {
   `;
 }
 
-export function renderStats(app) {
-  const { games, trainings, team } = getState();
+const STATS_TABS = ['leaders', 'history', 'h2h', 'awards'];
+const STATS_TAB_LABELS = { leaders: 'Leaders', history: 'History', h2h: 'Head-to-Head', awards: 'Awards' };
+
+// Used to be one long scroll through Player of the Week, the Leaders
+// table, Goalkeeper Appearances, History, and Head-to-Head all stacked on
+// top of each other — a full season made that a lot of scrolling just to
+// check one thing. Tabbed instead, same pattern as Training's Plan/
+// Attendance/Groups/Matches; each tab renders into its own content div so
+// switching doesn't re-run the other tabs' setup.
+export function renderStats(app, tab = 'leaders') {
+  if (!STATS_TABS.includes(tab)) tab = 'leaders';
+  const { games, trainings } = getState();
   const completedCount = games.filter((g) => g.status === 'completed').length;
   const trainingsTrackedCount = (trainings || []).filter((t) => (t.presentIds || []).length > 0).length;
-  const rows = sortRows(computeLeaderRows());
-  const history = sortByDateTime(games).reverse();
-  const months = historyByMonth(history);
-  const h2h = headToHead();
-  const baseColumns = keyStatColumns(team);
-  const deepColumns = deepStatColumns(team);
-  const activeDeepColumn = deepColumns.find((c) => c.key === sortKey);
-  const columns = activeDeepColumn ? [...baseColumns, activeDeepColumn] : baseColumns;
-  const weeks = weeksWithGames();
-  // Only the most recent couple of weeks need to be visible right away —
-  // older ones are still one tap away, just tucked behind a drop-down
-  // instead of adding to how far a coach has to scroll every time.
-  const recentWeeks = weeks.slice(0, 2);
-  const earlierWeeks = weeks.slice(2);
 
   app.innerHTML = `
     <div class="page-title">
@@ -360,19 +356,39 @@ export function renderStats(app) {
       </div>
     </div>
 
-    ${weeks.length ? `
-      <div class="section-title">🏅 Player of the Week</div>
-      <div id="recent-weeks">${recentWeeks.map(weekRowHtml).join('')}</div>
-      ${earlierWeeks.length ? `
-        <details class="card" id="earlier-weeks" data-details-key="earlier-weeks" ${isDetailsOpen('earlier-weeks', false) ? 'open' : ''}>
-          <summary style="cursor:pointer; font-weight:700;">${earlierWeeks.length} earlier week${earlierWeeks.length === 1 ? '' : 's'}</summary>
-          <div class="stack" style="margin-top:10px;">${earlierWeeks.map(weekRowHtml).join('')}</div>
-        </details>
-      ` : ''}
-    ` : ''}
+    <div class="tabs">
+      ${STATS_TABS.map((t) => `<a class="tab ${tab === t ? 'active' : ''}" href="#/stats/${t}">${STATS_TAB_LABELS[t]}</a>`).join('')}
+    </div>
 
-    <div class="section-title">Leaders</div>
-    <p class="muted small" style="margin:-4px 0 4px;">Tap a column to sort, tap a player for their full stat breakdown.</p>
+    <div id="stats-tab-content" style="margin-top:14px;"></div>
+  `;
+
+  const content = app.querySelector('#stats-tab-content');
+  if (tab === 'history') renderHistoryTab(content);
+  else if (tab === 'h2h') renderH2hTab(content);
+  else if (tab === 'awards') renderAwardsTab(content, app);
+  else renderLeadersTab(content);
+}
+
+function renderLeadersTab(container) {
+  const { team } = getState();
+  const rows = sortRows(computeLeaderRows());
+  const baseColumns = keyStatColumns(team);
+  const deepColumns = deepStatColumns(team);
+  const activeDeepColumn = deepColumns.find((c) => c.key === sortKey);
+  const columns = activeDeepColumn ? [...baseColumns, activeDeepColumn] : baseColumns;
+
+  // Rank medals only mean something for an actual leaderboard ordering —
+  // sorted by a stat, highest first. Alphabetical (or ascending) sort
+  // isn't ranking anyone, so no medals then. Raw time-on-pitch isn't an
+  // achievement either (it's often just who was available, or a fair-play
+  // rotation) — Apps/Minutes/Avg Min get no medals even sorted desc.
+  const NO_MEDAL_KEYS = new Set(['apps', 'minutes', 'avgMinutes']);
+  const showMedals = sortKey !== 'name' && sortDir === 'desc' && !NO_MEDAL_KEYS.has(sortKey);
+  const sortChips = [{ key: 'name', label: 'Player' }, ...columns];
+
+  container.innerHTML = `
+    <p class="muted small" style="margin:0 0 8px;">Tap a stat to sort by it, tap a player for their full stat breakdown.</p>
     ${team.minPlayingTimePercent != null ? `
       <p class="muted small" style="margin:0 0 8px;">⚠️ = below this team's ${team.minPlayingTimePercent}% playing-time standard (<a href="#/settings">Settings</a>).</p>
     ` : ''}
@@ -382,69 +398,85 @@ export function renderStats(app) {
         ${deepColumns.map((c) => `<option value="${c.key}"${sortKey === c.key ? ' selected' : ''}>${escapeHtml(STAT_FULL_LABELS[c.key] || c.label)}</option>`).join('')}
       </select>
     </div>
-    <div class="card" style="overflow-x:auto; padding:0;">
-      <table style="width:100%; border-collapse:collapse; font-size:13.5px;">
-        <thead>
-          <tr>
-            <th data-sort-col="name" style="text-align:left; padding:8px 10px; cursor:pointer; white-space:nowrap;">
-              Player${sortKey === 'name' ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
-            </th>
-            ${columns.map((c) => `
-              <th data-sort-col="${c.key}" style="text-align:right; padding:8px 8px; cursor:pointer; white-space:nowrap;">
-                ${c.label}${sortKey === c.key ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
-              </th>
-            `).join('')}
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.length ? rows.map((r) => leaderRowHtml(r, columns, team)).join('') : `<tr><td colspan="${columns.length + 1}" class="empty">No players yet.</td></tr>`}
-        </tbody>
-      </table>
+    <div class="chip-list" style="margin-bottom:12px;">
+      ${sortChips.map((c) => `
+        <button type="button" class="leader-sort-chip${sortKey === c.key ? ' active' : ''}" data-sort-col="${c.key}">
+          ${escapeHtml(c.label)}${sortKey === c.key ? (sortDir === 'desc' ? ' ▼' : ' ▲') : ''}
+        </button>
+      `).join('')}
+    </div>
+    <div class="leader-list">
+      ${rows.length ? rows.map((r, i) => leaderRowHtml(r, columns, team, showMedals ? i : -1)).join('') : '<div class="card empty">No players yet.</div>'}
     </div>
 
     ${goalkeeperStatsHtml()}
-
-    <div class="section-title">History</div>
-    ${history.length ? months.map((m, i) => historyMonthHtml(m, i === 0)).join('') : '<div class="card empty">No games yet.</div>'}
-
-    ${h2h.length ? `
-      <div class="section-title">Head-to-Head</div>
-      ${h2h.map(h2hRowHtml).join('')}
-    ` : ''}
   `;
 
-  trackDetailsToggle(app);
+  trackDetailsToggle(container);
 
-  app.querySelectorAll('[data-sort-col]').forEach((th) => {
-    th.addEventListener('click', () => {
-      const key = th.dataset.sortCol;
+  container.querySelectorAll('[data-sort-col]').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      const key = chip.dataset.sortCol;
       if (sortKey === key) sortDir = sortDir === 'desc' ? 'asc' : 'desc';
       // Alphabetical sort reads more naturally starting A→Z; every stat
       // column still starts highest-first, same as before.
       else { sortKey = key; sortDir = key === 'name' ? 'asc' : 'desc'; }
-      renderStats(app);
+      renderLeadersTab(container);
     });
   });
-  const deepSortSelect = app.querySelector('#leader-deep-sort-select');
+  const deepSortSelect = container.querySelector('#leader-deep-sort-select');
   if (deepSortSelect) {
     deepSortSelect.addEventListener('change', () => {
       if (!deepSortSelect.value) return;
       sortKey = deepSortSelect.value;
       sortDir = 'desc';
-      renderStats(app);
+      renderLeadersTab(container);
     });
   }
-  app.querySelectorAll('[data-action="open-player-stats"]').forEach((row) => {
+  container.querySelectorAll('[data-action="open-player-stats"]').forEach((row) => {
     row.addEventListener('click', () => {
       const r = rows.find((x) => x.player.id === row.dataset.playerId);
       if (r) openPlayerStatsModal(r, team);
     });
   });
+}
 
-  app.querySelectorAll('[data-action="set-week-award"]').forEach((btn) => {
+function renderHistoryTab(container) {
+  const history = sortByDateTime(getState().games).reverse();
+  const months = historyByMonth(history);
+  container.innerHTML = history.length ? months.map((m, i) => historyMonthHtml(m, i === 0)).join('') : '<div class="card empty">No games yet.</div>';
+  trackDetailsToggle(container);
+}
+
+function renderH2hTab(container) {
+  const h2h = headToHead();
+  container.innerHTML = h2h.length ? h2h.map(h2hRowHtml).join('') : '<div class="card empty">No head-to-head history yet — play the same opponent twice to see it here.</div>';
+  trackDetailsToggle(container);
+}
+
+function renderAwardsTab(container, app) {
+  const weeks = weeksWithGames();
+  // Only the most recent couple of weeks need to be visible right away —
+  // older ones are still one tap away, just tucked behind a drop-down
+  // instead of adding to how far a coach has to scroll every time.
+  const recentWeeks = weeks.slice(0, 2);
+  const earlierWeeks = weeks.slice(2);
+
+  container.innerHTML = weeks.length ? `
+    <div id="recent-weeks">${recentWeeks.map(weekRowHtml).join('')}</div>
+    ${earlierWeeks.length ? `
+      <details class="card" id="earlier-weeks" data-details-key="earlier-weeks" ${isDetailsOpen('earlier-weeks', false) ? 'open' : ''}>
+        <summary style="cursor:pointer; font-weight:700;">${earlierWeeks.length} earlier week${earlierWeeks.length === 1 ? '' : 's'}</summary>
+        <div class="stack" style="margin-top:10px;">${earlierWeeks.map(weekRowHtml).join('')}</div>
+      </details>
+    ` : ''}
+  ` : '<div class="card empty">No completed match weeks yet.</div>';
+
+  trackDetailsToggle(container);
+  container.querySelectorAll('[data-action="set-week-award"]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const week = weeks.find((w) => w.weekStart === btn.dataset.week);
-      if (week) openWeekAwardModal(week, () => renderStats(app));
+      if (week) openWeekAwardModal(week, () => renderStats(app, 'awards'));
     });
   });
 }
@@ -516,40 +548,235 @@ function openWeekAwardModal(week, onSaved) {
   });
 }
 
-// Compact table row — just the key-stat columns (keyStatColumns above),
-// with the whole row tappable to open the full breakdown (every other
-// stat sortColumns(team) tracks) in a modal instead of needing more
-// columns than fit a phone screen.
-function leaderRowHtml(row, columns, team) {
+const RANK_MEDALS = ['🥇', '🥈', '🥉'];
+
+// A player "card" row — just the key-stat set (keyStatColumns above), with
+// the whole row tappable to open the full breakdown (every other stat
+// sortColumns(team) tracks) in a modal. Used to be a dense table row; a
+// phone-width table left little room per stat and read as a spreadsheet,
+// so each stat is now its own small tile instead of a table column, and
+// the current sort's leader(s) get a medal.
+function leaderRowHtml(row, columns, team, rank) {
   const belowStandard = team.minPlayingTimePercent != null && row.playingTimePercent != null
     && Math.round(row.playingTimePercent * 100) < team.minPlayingTimePercent;
+  const avatarLabel = row.player.jerseyNumber != null ? row.player.jerseyNumber : row.player.name.charAt(0).toUpperCase();
+  const medal = rank >= 0 && rank < RANK_MEDALS.length ? RANK_MEDALS[rank] : '';
   return `
-    <tr data-action="open-player-stats" data-player-id="${row.player.id}" style="border-top:1px solid var(--line); cursor:pointer;">
-      <td style="padding:8px 10px;">
-        <div style="font-weight:600;">${escapeHtml(row.player.name)}${belowStandard ? ` <span title="Below this team's ${team.minPlayingTimePercent}% minimum playing time standard (set in Settings)">⚠️</span>` : ''}</div>
-        <div class="muted" style="font-size:12px;">${formatPositions(row.player)}</div>
-      </td>
-      ${columns.map((c) => `<td style="text-align:right; padding:8px 8px; font-weight:600;">${statDisplayValue(row, c.key, team)}</td>`).join('')}
-    </tr>
+    <div class="leader-row" data-action="open-player-stats" data-player-id="${row.player.id}">
+      <div class="leader-avatar">
+        ${escapeHtml(String(avatarLabel))}
+        ${medal ? `<span class="leader-medal">${medal}</span>` : ''}
+      </div>
+      <div class="leader-main">
+        <div class="leader-name" data-stat="name">${escapeHtml(row.player.name)}${belowStandard ? ` <span title="Below this team's ${team.minPlayingTimePercent}% minimum playing time standard (set in Settings)">⚠️</span>` : ''}</div>
+        <div class="muted leader-pos">${formatPositions(row.player)}</div>
+        <div class="leader-stats">
+          ${columns.map((c) => `
+            <div class="leader-stat${sortKey === c.key ? ' active' : ''}" data-stat="${c.key}">
+              <span class="leader-stat-val">${statDisplayValue(row, c.key, team)}</span>
+              <span class="leader-stat-lbl">${escapeHtml(c.label)}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    </div>
   `;
+}
+
+// Matches the full-word STAT_FULL_LABELS above — a small icon in front of
+// each row so the card reads less like a spreadsheet and more like a
+// player card's stat line.
+const STAT_ICONS = {
+  apps: '📅',
+  minutes: '⏱️',
+  avgMinutes: '⏱️',
+  goals: '⚽',
+  assists: '🅰️',
+  saves: '🧤',
+  yellows: '🟨',
+  reds: '🟥',
+  playingTimePercent: '📊',
+  potm: '⭐',
+  captaincies: '🅲',
+  weeklyAwards: '🏅',
+  attendance: '✅',
+  trainingAttendance: '🏃',
+};
+
+// Manual rounded-rect path — kept local rather than ctx.roundRect() since
+// not every in-app-browser WebView a parent's phone might render this in
+// supports it yet.
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+const CARD_FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+// Draws the same card the modal shows onto a <canvas> and resolves to a
+// PNG Blob — so it can be saved to the camera roll or handed to the
+// native share sheet, rather than a parent only ever seeing it as a
+// screenshot the coach happened to take.
+function renderPlayerCardImage(row, team, columns) {
+  const avatarLabel = row.player.jerseyNumber != null ? String(row.player.jerseyNumber) : row.player.name.charAt(0).toUpperCase();
+  const sub = `${formatPositions(row.player)}${row.player.jerseyNumber != null ? ` · #${row.player.jerseyNumber}` : ''}`;
+  const stats = columns.map((c) => ({
+    icon: STAT_ICONS[c.key] || '',
+    label: STAT_FULL_LABELS[c.key] || c.label,
+    value: String(statDisplayValue(row, c.key, team)),
+  }));
+
+  const SCALE = 3;
+  const W = 340;
+  const MARGIN = 16;
+  const HEADER_H = 172;
+  const ROW_H = 34;
+  const H = MARGIN * 2 + HEADER_H + 14 + stats.length * ROW_H;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = W * SCALE;
+  canvas.height = H * SCALE;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(SCALE, SCALE);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, W, H);
+
+  const hx = MARGIN, hy = MARGIN, hw = W - MARGIN * 2, hh = HEADER_H;
+  roundRectPath(ctx, hx, hy, hw, hh, 14);
+  const grad = ctx.createLinearGradient(hx, hy, hx + hw * 0.4, hy + hh * 1.2);
+  grad.addColorStop(0, '#0b3d38');
+  grad.addColorStop(0.55, '#155e54');
+  grad.addColorStop(1, '#c79a2e');
+  ctx.fillStyle = grad;
+  ctx.fill();
+
+  ctx.save();
+  roundRectPath(ctx, hx, hy, hw, hh, 14);
+  ctx.clip();
+  const sheen = ctx.createRadialGradient(hx + hw * 0.25, hy + hh * 0.1, 0, hx + hw * 0.25, hy + hh * 0.1, hw * 0.65);
+  sheen.addColorStop(0, 'rgba(255,255,255,0.22)');
+  sheen.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = sheen;
+  ctx.fillRect(hx, hy, hw, hh);
+  ctx.restore();
+
+  const cx = W / 2, cy = hy + 54, r = 34;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#d9ae3f';
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+  ctx.stroke();
+  ctx.fillStyle = '#141414';
+  ctx.font = `800 26px ${CARD_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(avatarLabel, cx, cy + 1);
+
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `800 21px ${CARD_FONT}`;
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillText(row.player.name, cx, cy + r + 30);
+
+  ctx.globalAlpha = 0.88;
+  ctx.font = `13px ${CARD_FONT}`;
+  ctx.fillText(sub, cx, cy + r + 50);
+  ctx.globalAlpha = 1;
+
+  const listTop = hy + hh + 14;
+  ctx.textAlign = 'left';
+  stats.forEach((s, i) => {
+    const rowTop = listTop + i * ROW_H;
+    const textY = rowTop + ROW_H / 2 + 5;
+    ctx.fillStyle = '#141414';
+    ctx.font = `14px ${CARD_FONT}`;
+    ctx.fillText(`${s.icon} ${s.label}`, MARGIN, textY);
+    ctx.textAlign = 'right';
+    ctx.font = `700 15px ${CARD_FONT}`;
+    ctx.fillText(s.value, W - MARGIN, textY);
+    ctx.textAlign = 'left';
+    if (i < stats.length - 1) {
+      ctx.strokeStyle = '#e8e6df';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(MARGIN, rowTop + ROW_H);
+      ctx.lineTo(W - MARGIN, rowTop + ROW_H);
+      ctx.stroke();
+    }
+  });
+
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('toBlob failed'))), 'image/png');
+  });
+}
+
+function sanitizeFilename(name) {
+  return name.replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'player';
 }
 
 function openPlayerStatsModal(row, team) {
   const columns = sortColumns(team);
+  const avatarLabel = row.player.jerseyNumber != null ? row.player.jerseyNumber : row.player.name.charAt(0).toUpperCase();
   openModal({
     title: row.player.name,
     bodyHtml: `
-      <div class="muted small mt-0" style="margin-bottom:6px;">${formatPositions(row.player)}${row.player.jerseyNumber != null ? ` · #${row.player.jerseyNumber}` : ''}</div>
+      <div class="player-card">
+        <div class="player-card-avatar">${escapeHtml(String(avatarLabel))}</div>
+        <div class="player-card-name">${escapeHtml(row.player.name)}</div>
+        <div class="player-card-sub">${formatPositions(row.player)}${row.player.jerseyNumber != null ? ` · #${row.player.jerseyNumber}` : ''}</div>
+      </div>
       <div class="stack" style="gap:0;">
         ${columns.map((c) => `
-          <div class="sublog-item">
-            <span>${escapeHtml(STAT_FULL_LABELS[c.key] || c.label)}</span>
+          <div class="sublog-item player-card-stat-row">
+            <span>${STAT_ICONS[c.key] || ''} ${escapeHtml(STAT_FULL_LABELS[c.key] || c.label)}</span>
             <strong>${statDisplayValue(row, c.key, team)}</strong>
           </div>
         `).join('')}
       </div>
-      <button type="button" class="btn block" data-close-modal style="margin-top:14px;">Close</button>
+      <button type="button" class="btn secondary block" data-action="save-player-card" style="margin-top:14px;">💾 Save as Image</button>
+      <button type="button" class="btn block" data-close-modal style="margin-top:10px;">Close</button>
     `,
+    onMount: (modalEl) => {
+      const saveBtn = modalEl.querySelector('[data-action="save-player-card"]');
+      saveBtn.addEventListener('click', async () => {
+        const originalLabel = saveBtn.textContent;
+        saveBtn.disabled = true;
+        try {
+          const blob = await renderPlayerCardImage(row, team, columns);
+          const filename = `${sanitizeFilename(row.player.name)}-card.png`;
+          const file = typeof File === 'function' ? new File([blob], filename, { type: 'image/png' }) : null;
+          if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+            try {
+              await navigator.share({ files: [file], title: `${row.player.name} — Player Card` });
+              return;
+            } catch {
+              // User cancelled the share sheet, or it failed here — fall through to a plain save instead.
+            }
+          }
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          saveBtn.textContent = '✅ Saved!';
+          setTimeout(() => { saveBtn.textContent = originalLabel; }, 2000);
+        } catch {
+          alertDialog('Could not generate the image on this device — try again, or take a screenshot instead.');
+        } finally {
+          saveBtn.disabled = false;
+        }
+      });
+    },
   });
 }
 
